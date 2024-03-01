@@ -5,19 +5,40 @@ scPair, a deep learning framework for computational analysis of single cell mult
 
 
 ---
-### Package requirements
-
-
----
 ### Package installation
+Please clone this repository:
+```command line
+git clone https://github.com/quon-titative-biology/scPair
+cd scPair
+```
+---
+### Package requirements
+scPair reqiues Python 3.7.12 or higher and it is implemented using PyTorch 1.12.0.
+You can shoose run the following command line:
 
+```command line
+conda create -y --name scpair -c conda-forge -c bioconda python=3.7.12
+conda activate scpair
+conda install pytorch cudatoolkit=11.6 -c pytorch -c conda-forge
+```
+
+Or alternatively, you can choose to use the [environment file](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml) provided under this repository:
+```command line
+conda env create --file=scpair.yml
+```
 
 ---
 ### Tutorials
 
+```python
+from scpair import *
+
+# upcoming soon
+
+```
 ---
 ### Updates
-
+First public release (Mar 1st, 2024)
 
 ---
 * This repository is being updated periodically. For questions, please email hrhu@ucdavis.edu
