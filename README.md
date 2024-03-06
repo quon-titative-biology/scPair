@@ -14,7 +14,7 @@ cd scPair
 ---
 ### Package requirements
 scPair reqiues Python 3.7.12 or higher and it is implemented using PyTorch 1.12.0.
-You can shoose run the following command line:
+You can choose run the following command line:
 
 ```command line
 conda create -y --name scpair -c conda-forge -c bioconda python=3.7.12
