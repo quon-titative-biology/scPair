@@ -30,11 +30,16 @@ conda env create --file=scpair.yml
 ---
 ### [Tutorials](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md)
 
+* This repository is being updated periodically. For questions, please email hrhu@ucdavis.edu
 
 ---
 ### Updates
-First public release (Mar 1st, 2024)
-* This repository is being updated periodically. For questions, please email hrhu@ucdavis.edu
+
+Tutorial update (Mar 6, 2024)
+
+First public release (Mar 1, 2024)
+
+Repo created (Aug 28, 2023)
 
 ---
 
@@ -43,7 +48,6 @@ If it is helpful in your research, please consider citing it:
 ```
 @software{scPair,
   author = {Hu, Hongru and Quon, Gerald},
-  doi = {},
   title = {Boosting single cell multimodal analysis by leveraging single cell atlases and implicit feature selection},
   url = {https://github.com/quon-titative-biology/scPair/},
   version = {1.0.0},
