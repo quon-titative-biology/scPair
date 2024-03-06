@@ -28,7 +28,7 @@ conda env create --file=scpair.yml
 ```
 
 ---
-### [Tutorials](https://github.com/quon-titative-biology/scPair//tutorials/README.md)
+### [Tutorials](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md)
 
 
 ---
