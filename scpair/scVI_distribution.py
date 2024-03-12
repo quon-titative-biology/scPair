@@ -1,3 +1,7 @@
+# adapted from scVI-tools
+# A Python library for probabilistic analysis of single-cell omics data
+# Adam Gayoso, Romain Lopez, Galen Xing, Pierre Boyeau, Valeh Valiollah Pour Amiri, Justin Hong, Katherine Wu, Michael Jayasuriya, Edouard Mehlman, Maxime Langevin, Yining Liu, Jules Samaran, Gabriel Misrachi, Achille Nazaret, Oscar Clivio, Chenling Xu, Tal Ashuach, Mariano Gabitto, Mohammad Lotfollahi, Valentine Svensson, Eduardo da Veiga Beltrame, Vitalii Kleshchevnikov, Carlos Talavera-López, Lior Pachter, Fabian J. Theis, Aaron Streets, Michael I. Jordan, Jeffrey Regier & Nir Yosef
+# Nature Biotechnology 2022 Feb 07. doi: 10.1038/s41587-021-01206-w.
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
