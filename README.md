@@ -17,9 +17,10 @@ scPair reqiues Python 3.7.12 or higher and it is implemented using PyTorch 1.12.
 You can choose run the following command line:
 
 ```command line
-conda create -y --name scpair -c conda-forge -c bioconda python=3.7.12
+conda create -y --name scpair -c conda-forge -c bioconda python=3.10
 conda activate scpair
-conda install pytorch cudatoolkit=11.6 -c pytorch -c conda-forge
+pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
+pip install scvi-tools
 ```
 
 Or alternatively, you can choose to use the [environment file](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml) provided under this repository:
