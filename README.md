@@ -36,7 +36,7 @@ conda env create --file=scpair.yml
 ---
 ### Updates
 
-Tutorial update (Mar 6, 2024)
+Tutorial updates (Mar 6, 2024; Apr 25, 2024)
 
 First public release (Mar 1, 2024)
 
