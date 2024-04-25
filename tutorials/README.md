@@ -75,8 +75,8 @@ optional: adding unimodal data
 """
 augment = scpair_setup.augment(unimodal_scobj = unimodal_rna_adata, unimodal_modalities = {'Gene Expression': 'zinb'}, unimodal_cov = None)
 augment_encoder_dict, augment_emb = augment # return the updated modality encoder and embeddings
+```
 
+### For more detailed scPair argument explanation, please go to this [link](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/understand_the_argument.md)
 
-
-
-
+---
