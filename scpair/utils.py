@@ -94,22 +94,20 @@ def add_weight_decay(model, output_layer=()):
 
 #%%
 def training_mode(model1, model2=None):
-    model1.train()
+    model1.train();
     if model2 is not None:
-       model2.train()
+       model2.train();
     else:
        pass
-    print("...")
 
 
 #%%
 def evaluating_mode(model1, model2=None):
-    model1.eval()
+    model1.eval();
     if model2 is not None:
-       model2.eval()
+       model2.eval();
     else:
        pass
-    print("...")
 
 
 #%%
@@ -166,26 +164,28 @@ def eval_net(input, output, library_size, encoder, decoder, likelihood_type="zin
     return  eval_total_loss
 
 
+
 #
-def train_VAE(input, encoder, decoder, optimizer, kl_weight=1, likelihood_type="zinb", add_cov=False, input_batch=None):
+def train_VAE(input, lib, encoder, decoder, optimizer, kl_weight=1, likelihood_type="zinb", add_cov=False, input_batch=None):
     if add_cov == True:
-       mu, sigma, z, latent_lib = encoder(input, input_batch)
-       outputs = decoder(z, input_batch, latent_lib, input)
+        mu, sigma, z, latent_lib = encoder(input, input_batch)
+        outputs = decoder(z, input_batch, lib, latent_lib)
     else:
-       mu, sigma, z, latent_lib = encoder(input, None)
-       outputs = decoder(z, None, latent_lib, input)
+        mu, sigma, z, latent_lib = encoder(input, None)
+        outputs = decoder(z, None, lib, latent_lib)
     kl_divergence = D.kl_divergence(D.Normal(mu, sigma), D.Normal(0,1)).mean()
     if  (likelihood_type == "zinb") or (likelihood_type == "nb"):
-         px_mu_scale, px_theta, px_mu_rate, px_pi, _ = outputs
-         reconstruction_loss = raw_loss(x=input, px_mu_rate=px_mu_rate, px_theta=px_theta, px_mu_scale=px_mu_scale, px_pi=px_pi, likelihood=likelihood_type)
+        px_mu_scale, px_theta, px_mu_rate, px_pi = outputs
+        reconstruction_loss = raw_loss(x=input, px_mu_rate=px_mu_rate, px_theta=px_theta, px_mu_scale=px_mu_scale, px_pi=px_pi, likelihood=likelihood_type)
     elif likelihood_type == "ber":
-         px = outputs[0]
-         reconstruction_loss = binarized_loss(input, px)
+        px = outputs[0]
+        reconstruction_loss = binarized_loss(input, px)
     elif likelihood_type == "gau":
-         px = outputs[0]
-         reconstruction_loss = scaled_loss(input, px)
+        px = outputs
+        reconstruction_loss = scaled_loss(input, px)
     else:
-         print("ERROR")
+        print("ERROR")
+        raise ValueError
     total_loss = kl_weight * kl_divergence + reconstruction_loss
     optimizer.zero_grad()
     total_loss.backward()
@@ -193,28 +193,29 @@ def train_VAE(input, encoder, decoder, optimizer, kl_weight=1, likelihood_type="
 
 
 #
-def eval_VAE(input, encoder, decoder, kl_weight=1, likelihood_type="zinb", add_cov=False, input_batch=None):
-    if add_cov == True:
-       mu, sigma, z, latent_lib = encoder(input, input_batch)
-       outputs = decoder(z, input_batch, latent_lib, input)
-    else:
-       mu, sigma, z, latent_lib = encoder(input, None)
-       outputs = decoder(z, None, latent_lib, input)
-    eval_kl_divergence = D.kl_divergence(D.Normal(mu, sigma), D.Normal(0,1)).mean()
-    if  (likelihood_type == "zinb") or (likelihood_type == "nb"):
-         px_mu_scale, px_theta, px_mu_rate, px_pi, _ = outputs
-         eval_recon_loss = raw_loss(x=input, px_mu_rate=px_mu_rate, px_theta=px_theta, px_mu_scale=px_mu_scale, px_pi=px_pi, likelihood=likelihood_type)
-    elif likelihood_type == "ber":
-         px = outputs[0]
-         eval_recon_loss = binarized_loss(input, px)
-    elif likelihood_type == "gau":
-         px = outputs[0]
-         eval_recon_loss = scaled_loss(input, px)
-    else:
-         print("ERROR")
-    eval_total_loss = kl_weight * eval_kl_divergence + eval_recon_loss
+def eval_VAE(input, lib, encoder, decoder, kl_weight=1, likelihood_type="zinb", add_cov=False, input_batch=None):
+    with torch.no_grad():
+        if add_cov == True:
+            mu, sigma, z, latent_lib = encoder(input, input_batch)
+            outputs = decoder(z, input_batch, lib, latent_lib)
+        else:
+            mu, sigma, z, latent_lib = encoder(input, None)
+            outputs = decoder(z, None, lib, latent_lib)
+        eval_kl_divergence = D.kl_divergence(D.Normal(mu, sigma), D.Normal(0,1)).mean()
+        if  (likelihood_type == "zinb") or (likelihood_type == "nb"):
+            px_mu_scale, px_theta, px_mu_rate, px_pi = outputs
+            eval_recon_loss = raw_loss(x=input, px_mu_rate=px_mu_rate, px_theta=px_theta, px_mu_scale=px_mu_scale, px_pi=px_pi, likelihood=likelihood_type)
+        elif likelihood_type == "ber":
+            px = outputs[0]
+            eval_recon_loss = binarized_loss(input, px)
+        elif likelihood_type == "gau":
+            px = outputs
+            eval_recon_loss = scaled_loss(input, px)
+        else:
+            print("ERROR")
+            raise ValueError
+        eval_total_loss = kl_weight * eval_kl_divergence + eval_recon_loss
     return  eval_total_loss, eval_recon_loss, eval_kl_divergence
-
 
 
 from scipy import sparse
@@ -227,4 +228,110 @@ def collate_wrapper(batch, omic_combn):
     batch = [torch.from_numpy(sparse.vstack(x).toarray()).float() if include else None
              for x, include in zip(zip(*batch), omic_combn)]
     return batch, dataset
+
+
+
+
+import anndata
+import scanpy as sc
+import scvi
+
+# merge the paired data
+def merge_paired_data(paired_objects = [None, None], modality_names = ['Gene Expression','Peaks'], modality_distributions = ['zinb', 'ber']):
+    assert len(paired_objects) == 2, 'paired_objects should be a list of 2 scanpy AnnData objects'
+    assert len(modality_names) == 2, 'modality_name should be a list of 2 strings (e.g. ["Gene Expression", "Peaks"])'
+    assert len(modality_distributions) == 2, 'modality_distributions should be a list of 2 strings (e.g. ["zinb", "ber"])'
+    assert paired_objects[0].obs.index.equals(paired_objects[1].obs.index), 'paired_objects should have the same sample index'
+    paired_obj_dict = dict(zip(modality_names, paired_objects))
+    paired_dist_dict = dict(zip(modality_names, modality_distributions))
+    for name in modality_names:
+        paired_obj_dict[name].var['modality'] = name
+        print('processing modality: {}'.format(name))
+        paired_obj_dict[name].var['modality_distribution'] = paired_dist_dict[name]
+        if paired_dist_dict[name] == 'ber':
+            # check if the data is binary
+            if paired_obj_dict[name].X.min() < 0 or paired_obj_dict[name].X.max() > 1:
+                print('Bernoulli distribution was set for', name, 'data,', 'but', name, 'data is not binary. Converting to binary...')
+                paired_obj_dict[name].X = (paired_obj_dict[name].X > 0).astype(int)
+        elif paired_dist_dict[name] == 'zinb' or paired_dist_dict[name] == 'nb':
+            if paired_obj_dict[name].X.min() < 0:
+                raise ValueError('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data has negative values.'.format(name, name))
+            elif paired_obj_dict[name].X.dtype != 'int': # not integer
+                # warning
+                warnings.warn('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data is not integer.'.format(name, name))
+        elif paired_dist_dict[name] == 'gau':
+            if paired_obj_dict[name].X.min() > 0:
+                raise ValueError('Gaussian distribution was set for {} data, but {} data has non-negative values.'.format(name, name))
+    adata_paired = anndata.concat([paired_obj_dict[modality_names[0]].T, paired_obj_dict[modality_names[1]].T], merge="same")
+    # adata_paired = paired_obj_dict[modality_names[0]].T.concatenate(paired_obj_dict[modality_names[1]].T, batch_key=None, join='inner')
+    adata_paired = adata_paired.T
+    return adata_paired
+
+
+# split the data
+def training_split(scobj, fracs=[0.8, 0.1, 0.1], seed=0, batch_key=None, pre_split=None):
+    if pre_split is not None:
+        train_set, val_set, test_set = pre_split
+        metadata_ = scobj.obs.copy()
+        metadata_['scPair_split'] = 'TBD'
+        metadata_.loc[train_set, 'scPair_split'] = 'train'
+        metadata_.loc[val_set, 'scPair_split'] = 'val'
+        metadata_.loc[test_set, 'scPair_split'] = 'test'
+        if scobj.obs.index.equals(metadata_.index):
+            scobj.obs = metadata_.copy()
+        else:
+            print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+            return metadata_
+    else:
+        print('No pre-split data provided. Splitting data based on provided fractions...')
+        assert np.isclose(np.sum(fracs), 1, atol=1e-9), 'train_frac + val_frac + test_frac should be approximately 1'
+        assert len(fracs) == 3, 'fracs should be a list of 3 fractions [train_frac, val_frac, test_frac]'
+        train_frac, val_frac, test_frac = fracs
+        assert train_frac >= 0 and val_frac >= 0 and test_frac >= 0, 'train_frac, val_frac, and test_frac should be >= 0'
+        np.random.seed(seed)
+        from sklearn.model_selection import train_test_split
+        if batch_key is None:
+            train_set, non_train_set = train_test_split(scobj.obs.index, test_size=val_frac + test_frac, random_state=seed)
+            if test_frac == 0:
+                val_set = non_train_set
+                test_set = []
+            else:
+                val_set, test_set = train_test_split(non_train_set, test_size=test_frac/(val_frac + test_frac), random_state=seed)
+            metadata_ = scobj.obs.copy()
+            metadata_['scPair_split'] = 'TBD'
+            metadata_.loc[train_set, 'scPair_split'] = 'train'
+            metadata_.loc[val_set, 'scPair_split'] = 'val'
+            metadata_.loc[test_set, 'scPair_split'] = 'test'
+            if scobj.obs.index.equals(metadata_.index):
+                scobj.obs = metadata_.copy() 
+            else:
+                print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+                return metadata_
+        else:
+            print('split the data based on', batch_key, 'column from the metadata')
+            if isinstance(batch_key, list):
+                for bk in batch_key:
+                    assert bk in scobj.obs.columns, 'batch_key {} should be in the metadata'.format(bk)
+            elif isinstance(batch_key, str):
+                assert batch_key in scobj.obs.columns, 'batch_key should be in the metadata'
+            else:
+                raise ValueError('batch_key should be a string or a list of strings')
+            metadata_ = scobj.obs.copy()
+            metadata_['cell_index'] = metadata_.index.tolist()
+            train_set = metadata_.groupby(batch_key).apply(lambda x: x.sample(frac=train_frac, random_state=seed))['cell_index'].tolist()
+            metadata_rest = metadata_.loc[~metadata_.index.isin(train_set)]
+            val_set = metadata_rest.groupby(batch_key).apply(lambda x: x.sample(frac=val_frac/(val_frac + test_frac), random_state=seed))['cell_index'].tolist()
+            test_set = metadata_rest.loc[~metadata_rest.index.isin(val_set)]['cell_index'].tolist()
+            metadata_['scPair_split'] = 'TBD'
+            metadata_.loc[train_set, 'scPair_split'] = 'train'
+            metadata_.loc[val_set, 'scPair_split'] = 'val'
+            metadata_.loc[test_set, 'scPair_split'] = 'test'
+            if scobj.obs.index.equals(metadata_.index):
+                scobj.obs = metadata_.copy()
+            else:
+                print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+                return metadata_
+    return scobj.copy()
+
+
 

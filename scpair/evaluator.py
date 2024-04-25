@@ -2,7 +2,7 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
-import numpy as np;
+import numpy as np
 import pandas as pd
 from sklearn import preprocessing, metrics
 import scipy
@@ -71,63 +71,3 @@ def FOSFTTM(query, reference, output_full=False, sort=False):
         return avg_fraction
 
 
-
-def plot_auroc_perpeak(matrix_true, matrix_pred):
-    """
-    return scRNA and scATAC projections on VAE embedding layers 
-    """
-    matrix_true = preprocessing.binarize(matrix_true)
-    fpr, tpr, _thresholds = metrics.roc_curve(matrix_true.flatten(), matrix_pred.flatten())
-    auc_flatten = metrics.auc(fpr, tpr)
-    auprc = metrics.average_precision_score(matrix_true.flatten(), matrix_pred.flatten())
-    pp = np.sum(matrix_true)
-    pp = pp/(matrix_true.shape[0] * matrix_true.shape[1])
-    auprc_norm_flatten = (auprc-pp)/(1-pp)
-    auc_list = []
-    auprc_list = []
-    npos = []
-    for i in range(matrix_true.shape[1]):
-        pp = np.sum(matrix_true[:,i])
-        npos.append(pp)
-        if pp >= 1:
-            fpr, tpr, _thresholds = metrics.roc_curve(matrix_true[:,i], matrix_pred[:,i])
-            auc = metrics.auc(fpr, tpr)
-            auprc = metrics.average_precision_score(matrix_true[:,i], matrix_pred[:,i])
-            pp = pp/matrix_true.shape[0]
-            auprc_norm = (auprc-pp)/(1-pp)
-            auc_list.append(auc)
-            auprc_list.append(auprc_norm)
-        else:
-            auc_list.append(np.nan)
-            auprc_list.append(np.nan)  
-    return np.array(auc_list), np.array(auprc_list), auc_flatten, auprc_norm_flatten, np.array(npos)
-
-
-def plot_cor_pergene(x, y, logscale, normlib):
-    """
-    return pearson correlation coefficient for each gene: pearson_r_list
-    flattened pearson correlation coefficient: pearson_r_flatten
-    number of positive values in the true profile for each gene
-    """
-    assert x.shape == y.shape, f"Mismatched shapes: {x.shape} {y.shape}"
-    x = np.asarray(x)
-    y = np.asarray(y)
-    if normlib == 'norm':
-        ## compare with normalized true profile
-        lib = x.sum(axis=1, keepdims=True)
-        x = x / lib
-    if logscale:
-        x = np.log1p(x)
-        y = np.log1p(y)
-    pearson_r_flatten, pearson_p_flatten = scipy.stats.pearsonr(x.flatten(), y.flatten())
-    pearson_r_list = []
-    npos = []
-    for i in range(x.shape[1]):
-        npos.append(np.sum(x[:,i] > 0))
-        if not np.all(x[:,i] == 0) and not np.all(y[:,i] == 0):
-            pearson_r, pearson_p = scipy.stats.pearsonr(x[:,i], y[:,i])
-            #spearman_corr, spearman_p = scipy.stats.spearmanr(x, y)
-            pearson_r_list.append(pearson_r)
-        else:
-            pearson_r_list.append(np.nan)
-    return np.array(pearson_r_list), pearson_r_flatten, np.array(npos)

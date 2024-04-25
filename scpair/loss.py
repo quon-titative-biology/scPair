@@ -27,10 +27,17 @@ def scaled_loss(x, mu):
     return loss
 
 
-# binarized data: binarized AC
+
+# binarized data: binarized ATAC peaks
+# def binarized_loss(x, p):
+#     loss_func = nn.BCELoss()
+#     loss = loss_func(p, x)
+#     return loss
 def binarized_loss(x, p):
+    # Missing data are nan's
+    mask = torch.isnan(x)
     loss_func = nn.BCELoss()
-    loss = loss_func(p, x)
+    loss = loss_func(p[~mask], x[~mask])
     return loss
 
 
