@@ -288,7 +288,7 @@ class scPair_object():
                  activation = nn.LeakyReLU(),
                  early_stopping_activation = True,
                  early_stopping_patience = 25,
-                 weight_decay = None, # 'ExponentialLR',
+                 weight_decay = None, # 'ExponentialLR', 'StepLR', 'ReduceLROnPlateau'
                  device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
                  save_model = True,
                  save_path = None,
@@ -370,362 +370,265 @@ class scPair_object():
         if self.sample_factor_rna is True and self.infer_library_size_rna is True:
             raise ValueError('sample_factor_rna and infer_library_size_rna cannot be both True')
     def data_loader_builder(self):
-        data = self.scobj.copy()  # data: scanpy AnnData object
+        data = self.scobj.copy()
         cov = self.cov
-        if cov is not None:
-            cov_dummy = pd.get_dummies(data.obs[cov]).astype(int)
+        # Convert categorical covariates to dummy variables
+        cov_dummy = pd.get_dummies(data.obs[cov]).astype(int) if cov is not None else None
+        if cov_dummy is not None:
             data.obs = pd.concat([data.obs, cov_dummy], axis=1)
-        else:
-            cov_dummy = None
         self.cov_dummy = cov_dummy
-        data_train = data[data.obs['scPair_split'] == 'train']
-        data_val = data[data.obs['scPair_split'] == 'val']
-        data_test = data[data.obs['scPair_split'] == 'test'] if np.sum(data.obs['scPair_split'] == 'test') > 0 else None
-        self.train_metadata = data_train.obs.copy()
-        self.val_metadata = data_val.obs.copy()
-        self.test_metadata = data_test.obs.copy() if data_test is not None else None
+        # Split data into train, validation, and test sets
+        split_data = {split: data[data.obs['scPair_split'] == split] for split in ['train', 'val', 'test']}
+        self.train_metadata = split_data['train'].obs.copy()
+        self.val_metadata = split_data['val'].obs.copy()
+        self.test_metadata = split_data['test'].obs.copy() if 'test' in split_data else None
+        # Convert sparse matrix to dense matrix
         if scipy.sparse.issparse(data.X):
             print('Converting sparse matrix to dense matrix...')
             data.X = data.X.toarray()
+        # Initialize data loaders
         print('Initializing data loaders...')
         data_loader_dict = {}
-        modality_names = self.modality_names
-        for modality in modality_names:
+        for modality in self.modality_names:
             print('processing modality:', modality)
-            data_loader_dict[modality + '_train_mtx'] = torch.FloatTensor(data_train[:, data.var['modality'] == modality].X)
-            data_loader_dict[modality + '_train_cov'] = torch.FloatTensor(cov_dummy.loc[data_train.obs.index].values) if cov is not None else None
-            data_loader_dict[modality + '_val_mtx'] = torch.FloatTensor(data_val[:, data.var['modality'] == modality].X)
-            data_loader_dict[modality + '_val_cov'] = torch.FloatTensor(cov_dummy.loc[data_val.obs.index].values) if cov is not None else None
-            if data_test is not None:
-                data_loader_dict[modality + '_test_mtx'] = torch.FloatTensor(data_test[:, data.var['modality'] == modality].X)
-                data_loader_dict[modality + '_test_cov'] = torch.FloatTensor(cov_dummy.loc[data_test.obs.index].values) if cov is not None else None             
-            if modality == 'Gene Expression':
-                data_loader_dict[modality + '_train_lib'] = data_loader_dict['Gene Expression_train_mtx'].sum(1).reshape(-1,1)
-                data_loader_dict[modality + '_val_lib'] = data_loader_dict['Gene Expression_val_mtx'].sum(1).reshape(-1,1)
-                data_loader_dict[modality + '_test_lib'] = data_loader_dict['Gene Expression_test_mtx'].sum(1).reshape(-1,1) if data_test is not None else None
-            elif modality == 'Peaks':
-                data_loader_dict[modality + '_train_lib'] = data_loader_dict['Peaks_train_mtx'].sum(1).reshape(-1,1)
-                data_loader_dict[modality + '_val_lib'] = data_loader_dict['Peaks_val_mtx'].sum(1).reshape(-1,1)
-                data_loader_dict[modality + '_test_lib'] = data_loader_dict['Peaks_test_mtx'].sum(1).reshape(-1,1) if data_test is not None else None
-        data_loader_keys = list(data_loader_dict.keys())
-        self.data_loader_keys = data_loader_keys
-        train_keys = [key for key in data_loader_keys if 'train' in key]
-        val_keys = [key for key in data_loader_keys if 'val' in key]
-        # train_lib_keys = [key for key in train_keys if 'lib' in key]
-        # val_lib_keys = [key for key in val_keys if 'lib' in key]
-        data_loader_dict_train = {key: data_loader_dict[key] for key in train_keys}
-        data_loader_dict_val = {key: data_loader_dict[key] for key in val_keys}
-        self.data_loader_dict_train = data_loader_dict_train
-        self.data_loader_dict_val = data_loader_dict_val
-        # train_dataset = torch.utils.data.ConcatDataset([data_loader_dict_train[key].to(device) for key in data_loader_dict_train.keys()])
-        # val_dataset = torch.utils.data.ConcatDataset([data_loader_dict_val[key].to(device) for key in data_loader_dict_val.keys()])
-        test_keys = [key for key in data_loader_keys if 'test' in key] if data_test is not None else None
-        data_loader_dict_test = {key: data_loader_dict[key] for key in test_keys} if data_test is not None else None
-        self.data_loader_dict_test = data_loader_dict_test
-        # test_lib_keys = [key for key in test_keys if 'lib' in key] if data_test is not None else None
-        # test_dataset = torch.utils.data.ConcatDataset([data_loader_dict_test[key].to(device) for key in data_loader_dict_test.keys()]) if data_test is not None else None
-        return data_loader_dict_train, data_loader_dict_val, data_loader_dict_test
+            for split in ['train', 'val', 'test']:
+                if split in split_data:
+                    data_loader_dict[f'{modality}_{split}_mtx'] = torch.FloatTensor(split_data[split][:, data.var['modality'] == modality].X)
+                    data_loader_dict[f'{modality}_{split}_cov'] = torch.FloatTensor(cov_dummy.loc[split_data[split].obs.index].values) if cov is not None else None
+                    if modality in ['Gene Expression', 'Peaks']:
+                        data_loader_dict[f'{modality}_{split}_lib'] = data_loader_dict[f'{modality}_{split}_mtx'].sum(1).reshape(-1,1)
+        # Store data loader keys and split data loaders by train, validation, and test sets
+        self.data_loader_keys = list(data_loader_dict.keys())
+        for split in ['train', 'val', 'test']:
+            if f'{modality}_{split}_mtx' in data_loader_dict:
+                setattr(self, f'data_loader_dict_{split}', {key: data_loader_dict[key] for key in self.data_loader_keys if split in key})
+        return self.data_loader_dict_train, self.data_loader_dict_val, self.data_loader_dict_test
     def run(self):
-        data_loader_dict_train, data_loader_dict_val, data_loader_dict_test = self.data_loader_builder() # self, data = self.scobj, modality_names = self.modality_names, cov = self.cov)
-        encoder_dict, decoder_dict = self.train_predicting_networks(data_loader_dict_train, data_loader_dict_val, data_loader_dict_test)
-        self.encoder_dict = encoder_dict.copy()
-        self.decoder_dict = decoder_dict.copy()
+        # Build data loaders and train predicting networks
+        self.encoder_dict, self.decoder_dict = self.train_predicting_networks(*self.data_loader_builder())
+        # Generate reference embeddings
         low_dim_embeddings, _ = self.reference_embeddings()
-        mapping_dict = self.train_bidirectional_mapping()
-        self.mapping_dict = mapping_dict.copy()
+        # Train bidirectional mapping and store the mapping dictionary
+        self.mapping_dict = self.train_bidirectional_mapping()
+        # Generate mapped embeddings
         low_dim_embeddings_mapped, _ = self.mapped_embeddings()
-        return encoder_dict, decoder_dict, mapping_dict, low_dim_embeddings, low_dim_embeddings_mapped
+        return self.encoder_dict, self.decoder_dict, self.mapping_dict, low_dim_embeddings, low_dim_embeddings_mapped
+    def reference_embeddings(self):
+        embeddings = {}
+        df_embeddings = {}
+        for modality in self.modality_names:
+            # Get the encoder for the current modality
+            encoder_cal = self.encoder_dict[modality + ' to ' + [mn for mn in self.modality_names if mn != modality][0]]
+            encoder_cal.eval()
+            encoder_cal.to(self.device)
+            # Generate embeddings for train, validation, and test sets
+            for split in ['train', 'val', 'test']:
+                if hasattr(self, f'data_loader_dict_{split}'):
+                    data_loader_dict = getattr(self, f'data_loader_dict_{split}')
+                    embeddings[f'{modality}_{split}'] = encoder_cal(data_loader_dict[f'{modality}_{split}_mtx'].to(self.device), data_loader_dict[f'{modality}_{split}_cov'].to(self.device))[0].cpu().detach() if self.cov is not None else encoder_cal(data_loader_dict[f'{modality}_{split}_mtx'].to(self.device), None)[0].cpu().detach()
+                    df_embeddings[f'{modality}_{split}'] = pd.DataFrame(embeddings[f'{modality}_{split}'].numpy(), index = getattr(self, f'{split}_metadata').index)
+        self.embeddings = embeddings
+        return embeddings, df_embeddings
+    def mapped_embeddings(self):
+        mapped_embeddings = {}
+        df_mapped_embeddings = {}
+        for input_modality in self.modality_names:
+            output_modality = [mn for mn in self.modality_names if mn != input_modality][0]
+            mapping_network = self.mapping_dict[input_modality + '_to_' + output_modality]
+            mapping_network.eval()
+            mapping_network.to(self.device)
+            # Generate mapped embeddings for train, validation, and test sets
+            for split in ['train', 'val', 'test']:
+                if hasattr(self, f'data_loader_dict_{split}'):
+                    input_embedding = self.embeddings[input_modality + f'_{split}']
+                    mapped_embeddings[f'{input_modality} to {output_modality}_{split}'] = mapping_network(input_embedding.to(self.device)).cpu().detach()
+                    df_mapped_embeddings[f'{input_modality} to {output_modality}_{split}'] = pd.DataFrame(mapped_embeddings[f'{input_modality} to {output_modality}_{split}'].numpy(), index = getattr(self, f'{split}_metadata').index)
+        return mapped_embeddings, df_mapped_embeddings
+    def predict(self):
+        predictions = {}
+        # Iterate over each modality
+        for input_modality in self.modality_names:
+            output_modality = [mn for mn in self.modality_names if mn != input_modality][0]
+            print('predicting from', input_modality, 'to', output_modality)
+            print('input_distribution:', self.modalities[input_modality], 'output_distribution:', self.modalities[output_modality])
+            # Get the decoder for the current modality
+            decoder_cal = self.decoder_dict[input_modality + ' to ' + output_modality]
+            decoder_cal.eval()
+            decoder_cal.to(self.device)
+            # Check the output distribution and infer library size if necessary
+            if self.modalities[output_modality] in ['ber', 'nb', 'zinb'] and ((output_modality == 'Peaks' and self.infer_library_size_atac) or (output_modality == 'Gene Expression' and self.infer_library_size_rna)):
+                encoder_cal = self.encoder_dict[input_modality + ' to ' + output_modality]
+                encoder_cal.eval()
+                encoder_cal.to(self.device)
+                latent = {split: encoder_cal(getattr(self, f'data_loader_dict_{split}')[input_modality + f'_{split}_mtx'].to(self.device),
+                                            getattr(self, f'data_loader_dict_{split}')[input_modality + f'_{split}_cov'].to(self.device) if self.cov is not None else None)[1]
+                        for split in ['train', 'val', 'test'] if hasattr(self, f'data_loader_dict_{split}')}
+            else:
+                latent = {split: None for split in ['train', 'val', 'test']}
+            # Generate predictions for train, validation, and test sets
+            for split in ['train', 'val', 'test']:
+                if hasattr(self, f'data_loader_dict_{split}'):
+                    prediction = decoder_cal(latent_rep=self.embeddings[input_modality + f'_{split}'].to(self.device),
+                                            output_batch=getattr(self, f'data_loader_dict_{split}')[output_modality + f'_{split}_cov'].to(self.device) if self.cov is not None else None,
+                                            lib=torch.FloatTensor([1]).to(self.device) if self.modalities[output_modality] in ['ber', 'nb', 'zinb'] else None,
+                                            latent_lib=latent[split])
+                    # If the output distribution is 'gau', don't index the prediction
+                    if self.modalities[output_modality] == 'gau':
+                        predictions[output_modality + f"_{split}"] = prediction.cpu().detach().numpy()
+                    else:
+                        predictions[output_modality + f"_{split}"] = prediction[0].cpu().detach().numpy()
+        return predictions
+    def get_scheduler(self, optimizer):
+        """Create a learning rate scheduler."""
+        if self.weight_decay == 'ExponentialLR':
+            return torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1)
+        elif self.weight_decay == 'StepLR':
+            return torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=25, gamma=0.1, last_epoch=-1)
+        elif self.weight_decay == 'ReduceLROnPlateau':
+            return torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='min', factor=0.1, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
+        else:
+            print('Warning: weight_decay should be one of the following: ExponentialLR, StepLR, ReduceLROnPlateau. No weight decay applied.')
+            return None
     def train_predicting_networks(self, train_data_dict, val_data_dict, test_data_dict):
-        save_model = self.save_model
-        save_path = self.save_path
-        modalities = self.modalities
-        device = self.device
-        SEED = self.SEED
-        cov = self.cov
-        hidden_layer = self.hidden_layer
-        dropout_rate = self.dropout_rate
-        batchnorm = self.batchnorm
-        layernorm = self.layernorm
-        learning_rate_prediction = self.learning_rate_prediction
-        batch_size = self.batch_size
-        L2_lambda = self.L2_lambda
-        max_epochs = self.max_epochs
-        activation = self.activation
-        early_stopping_activation = self.early_stopping_activation
-        weight_decay = self.weight_decay
-        add_linear_layer = self.add_linear_layer
-        sample_factor_rna = self.sample_factor_rna
-        feature_factor_rna = self.feature_factor_rna
-        sample_factor_atac = self.sample_factor_atac
-        feature_factor_atac = self.feature_factor_atac
-        zero_inflated = self.zero_inflated
-        dispersion = self.dispersion
-        infer_library_size_rna = self.infer_library_size_rna
-        infer_library_size_atac = self.infer_library_size_atac
+        # Initialize dictionaries to store encoders and decoders
         encoder_dict = {}
         decoder_dict = {}
-        for input_modality in modalities.keys():
-            output_modality = [modality for modality in modalities.keys() if modality != input_modality][0]
+        # Loop over each modality
+        for input_modality in self.modalities.keys():
+            output_modality = [modality for modality in self.modalities.keys() if modality != input_modality][0]
             prediction_order = {'input':input_modality, 'output':output_modality}
             print('Set up predicting networks:', prediction_order)
-            # dataset split
-            trainData = train_data_dict[input_modality + '_train_mtx']
-            trainLabel = train_data_dict[output_modality + '_train_mtx']
-            valData = val_data_dict[input_modality + '_val_mtx'].to(device)
-            valLabel = val_data_dict[output_modality + '_val_mtx'].to(device)
-            if cov is not None:
-                trainBatch = train_data_dict[input_modality + '_train_cov']
-                valBatch = val_data_dict[input_modality + '_val_cov'].to(device)
-            else:
-                trainBatch = None
-                valBatch = None
-            if modalities[output_modality] == 'gau':
-                output_distribution = modalities[output_modality]
-                set_seed(SEED)
+            # Get training and validation data
+            trainData, trainLabel = train_data_dict[input_modality + '_train_mtx'], train_data_dict[output_modality + '_train_mtx']
+            valData, valLabel = val_data_dict[input_modality + '_val_mtx'].to(self.device), val_data_dict[output_modality + '_val_mtx'].to(self.device)
+            trainBatch, valBatch = (train_data_dict[input_modality + '_train_cov'], val_data_dict[input_modality + '_val_cov'].to(self.device)) if self.cov is not None else (None, None)
+            # Initialize encoder and decoder
+            # Check if the input modality is one of the specified distributions
+            if self.modalities[input_modality] in ['zinb', 'nb', 'ber', 'gau']:
+                # Initialize encoder
+                set_seed(self.SEED)
                 encoder = self.input_module(input_dim = train_data_dict[input_modality + '_train_mtx'].shape[1],
-                                            input_batch_num = train_data_dict[input_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                            hidden_layer = hidden_layer,
-                                            activation = activation,
-                                            layernorm = layernorm,
-                                            batchnorm = batchnorm,
-                                            dropout_rate = dropout_rate,
-                                            add_linear_layer = add_linear_layer,
-                                            infer_library_size = False) # set to False for now
-                set_seed(SEED)
-                decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
-                                                                    output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                                                    hidden_layer = hidden_layer,
-                                                                    infer_library_size = False,
-                                                                    feature_factor = False)
-                encoder.apply(init_weights)
-                encoder.to(device)
-                decoder.apply(init_weights)
-                decoder.to(device)
-                output_layers = ['output']
-                decay_param_encoder, nodecay_param_encoder, decay_name_encoder, nodecay_name_encoder = add_weight_decay(encoder, output_layer=output_layers)
-                decay_param_decoder, nodecay_param_decoder, decay_name_decoder, nodecay_name_decoder = add_weight_decay(decoder, output_layer=output_layers)
-                optimizer = torch.optim.AdamW([{'params': decay_param_encoder, 'weight_decay':L2_lambda, 'lr': learning_rate_prediction},
-                                            {'params': decay_param_decoder, 'weight_decay':L2_lambda, 'lr': learning_rate_prediction},
-                                            {'params': nodecay_param_encoder, 'weight_decay':0, 'lr': learning_rate_prediction}, 
-                                            {'params': nodecay_param_decoder, 'weight_decay':0, 'lr': learning_rate_prediction}])
-                if weight_decay == 'ExponentialLR':
-                    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1)
-                elif weight_decay == 'StepLR':
-                    scheduler = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=25, gamma=0.1, last_epoch=-1)
-                elif weight_decay == 'ReduceLROnPlateau':
-                    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='min', factor=0.1, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
+                                            input_batch_num = train_data_dict[input_modality + '_train_cov'].shape[1] if self.cov is not None else 0,
+                                            hidden_layer = self.hidden_layer,
+                                            activation = self.activation,
+                                            layernorm = self.layernorm,
+                                            batchnorm = self.batchnorm,
+                                            dropout_rate = self.dropout_rate,
+                                            add_linear_layer = self.add_linear_layer,
+                                            infer_library_size = self.infer_library_size_rna if output_modality == 'Gene Expression' else self.infer_library_size_atac)
+                print('Set up encoder: from', input_modality, '"', self.modalities[input_modality],'distribution "', 'to', output_modality, '"', self.modalities[output_modality], 'distribution"')
+                if self.modalities[output_modality] == 'gau':
+                    output_distribution = self.modalities[output_modality]
+                    # Initialize encoder and decoder
+                    set_seed(self.SEED)
+                    encoder = self.input_module(input_dim = train_data_dict[input_modality + '_train_mtx'].shape[1],
+                                                input_batch_num = train_data_dict[input_modality + '_train_cov'].shape[1] if self.cov is not None else 0,
+                                                hidden_layer = self.hidden_layer,
+                                                activation = self.activation,
+                                                layernorm = self.layernorm,
+                                                batchnorm = self.batchnorm,
+                                                dropout_rate = self.dropout_rate,
+                                                add_linear_layer = self.add_linear_layer,
+                                                infer_library_size = False) # set to False for now
+                    set_seed(self.SEED)
+                    decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
+                                                                        output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if self.cov is not None else 0,
+                                                                        hidden_layer = self.hidden_layer,
+                                                                        infer_library_size = False,
+                                                                        feature_factor = False)
+                    print('Set up decoder: from', input_modality, '"', self.modalities[input_modality],'distribution "', 'to', output_modality, '"', self.modalities[output_modality], 'distribution"')
+                    trainLib = valLib = testLib = None
                 else:
-                    scheduler = None
-                    Warning('weight_decay should be one of the following: ExponentialLR, StepLR, ReduceLROnPlateau. No weight decay applied.')
-                train_data = TensorDataset(trainData.to(device), trainBatch.to(device), trainLabel.to(device)) if cov is not None else TensorDataset(trainData.to(device), trainLabel.to(device))
-                from torch.utils.data import DataLoader, Dataset
-                set_seed(SEED)
-                DataLoader_train = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-                if early_stopping_activation is True:
-                    early_stopping_patience = self.early_stopping_patience
-                    epochs_no_improve = 0
-                    early_stop = False
-                    min_val_loss = np.inf
-                    print('Enabling early stopping with patience of', early_stopping_patience)
-                text = '\033[95m' + 'Start training feature predictor: {} '.format(prediction_order) + '\033[0m'            
-                print('#' * (len(text)-5))
-                print('# ' + text + ' #')
-                print('#' * (len(text)-5))
-                pbar = tqdm.tqdm(range(max_epochs))
-                for epoch in pbar:
-                    training_mode(encoder, decoder)
-                    if cov is not None:
-                        for idx, (x, b, y) in enumerate(DataLoader_train):
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
-                    else:
-                        for idx, (x, y) in enumerate(DataLoader_train):
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=modalities[output_modality])
-                    evaluating_mode(encoder, decoder)
-                    with torch.no_grad():
-                        if cov is not None:
-                            val_total_loss = eval_net(valData, valLabel, None, encoder, decoder, likelihood_type=modalities[output_modality], add_cov=True, input_batch=valBatch, output_batch=valBatch)
+                    output_distribution = self.modalities[output_modality]
+                    if output_distribution in ['zinb', 'nb']:
+                        set_seed(self.SEED)
+                        decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
+                                                                        output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if self.cov is not None else 0,
+                                                                        hidden_layer = self.hidden_layer,
+                                                                        infer_library_size = self.infer_library_size_rna,
+                                                                        sample_factor = self.sample_factor_rna,
+                                                                        feature_factor = self.feature_factor_rna,
+                                                                        zero_inflated = self.zero_inflated,
+                                                                        dispersion = self.dispersion)
+                        print('Set up decoder: from', input_modality, '"', self.modalities[input_modality],'distribution "', 'to', output_modality, '"', self.modalities[output_modality], 'distribution"')
+                        # Set up library size if not inferred
+                        if self.sample_factor_rna is True:
+                            trainLib = train_data_dict[output_modality + '_train_lib']
+                            valLib = val_data_dict[output_modality + '_val_lib'].to(self.device)
+                            testLib = test_data_dict[output_modality + '_test_lib'].to(self.device) if test_data_dict is not None else None
                         else:
-                            val_total_loss = eval_net(valData, valLabel, None, encoder, decoder, likelihood_type=modalities[output_modality])
-                        pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
-                    if optimizer.param_groups[0]['lr'] > 1e-7:
-                        # print(optimizer.param_groups[0]['lr'])
-                        if weight_decay == 'ExponentialLR':
-                            scheduler.step()
-                        elif weight_decay == 'StepLR':
-                            scheduler.step()
-                        elif weight_decay == 'ReduceLROnPlateau':
-                            scheduler.step()
+                            trainLib = valLib = testLib = None
+                    elif output_distribution == 'ber':
+                        set_seed(self.SEED)
+                        decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
+                                                                        output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if self.cov is not None else 0,
+                                                                        hidden_layer = self.hidden_layer,
+                                                                        infer_library_size = self.infer_library_size_atac,
+                                                                        sample_factor = self.sample_factor_atac,
+                                                                        feature_factor = self.feature_factor_atac)
+                        print('Set up decoder: from', input_modality, '"', self.modalities[input_modality],'distribution "', 'to', output_modality, '"', self.modalities[output_modality], 'distribution"')
+                        # Set up library size if not inferred
+                        if self.sample_factor_atac is True:
+                            trainLib = train_data_dict[output_modality + '_train_lib']
+                            valLib = val_data_dict[output_modality + '_val_lib'].to(self.device)
+                            testLib = test_data_dict[output_modality + '_test_lib'].to(self.device) if test_data_dict is not None else None
                         else:
-                            pass
-                    if val_total_loss.item() < min_val_loss:
-                        epochs_no_improve = 0
-                        min_val_loss = val_total_loss.item()
-                        encoder_ckpt = copy.deepcopy(encoder)
-                        decoder_ckpt = copy.deepcopy(decoder)
+                            trainLib = valLib = testLib = None
                     else:
-                        epochs_no_improve += 1
-                        pbar.set_postfix({'Message': 'Early stopping triggered!', 'Patience Left': early_stopping_patience - epochs_no_improve})
-                        # tqdm.tqdm.write("Early stopping triggered!", early_stopping_patience - epochs_no_improve)
-                    if epoch > 1 and epochs_no_improve == early_stopping_patience:
-                        print("Early Stopped!")
-                        early_stop = True
-                        break
-                    else:
-                        continue
-                encoder_dict[input_modality + '_to_' + output_modality] = copy.deepcopy(encoder_ckpt)
-                decoder_dict[input_modality + '_to_' + output_modality] = copy.deepcopy(decoder_ckpt)
-                if save_model is True:
-                    if save_path is None:
-                        save_path = os.getcwd()
-                    torch.save(encoder_dict[input_modality + '_to_' + output_modality].state_dict(), save_path + '/encoder_' + input_modality + '_to_' + output_modality + '.pt')
-                    torch.save(decoder_dict[input_modality + '_to_' + output_modality].state_dict(), save_path + '/decoder_' + input_modality + '_to_' + output_modality + '.pt')
-            elif modalities[input_modality] == 'zinb' or modalities[input_modality] == 'nb' or modalities[input_modality] == 'ber' or modalities[input_modality] == 'gau':
-                if modalities[input_modality] != 'gau':
-                    set_seed(SEED)
-                    encoder = self.input_module(input_dim = train_data_dict[input_modality + '_train_mtx'].shape[1],
-                                                input_batch_num = train_data_dict[input_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                                hidden_layer = hidden_layer,
-                                                activation = activation,
-                                                layernorm = layernorm,
-                                                batchnorm = batchnorm,
-                                                dropout_rate = dropout_rate,
-                                                add_linear_layer = add_linear_layer,
-                                                infer_library_size = infer_library_size_rna if output_modality == 'Gene Expression' else infer_library_size_atac)
-                    print('Set up encoder from', input_modality, '"', modalities[input_modality],'distribution "', 'to', output_modality)
-                if modalities[input_modality] == 'gau':
-                    set_seed(SEED)
-                    encoder = self.input_module(input_dim = train_data_dict[input_modality + '_train_mtx'].shape[1],
-                                                input_batch_num = train_data_dict[input_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                                hidden_layer = hidden_layer,
-                                                activation = activation,
-                                                layernorm = layernorm,
-                                                batchnorm = batchnorm,
-                                                dropout_rate = dropout_rate,
-                                                add_linear_layer = add_linear_layer,
-                                                infer_library_size = infer_library_size_rna if output_modality == 'Gene Expression' else infer_library_size_atac)
-                    print('Set up encoder from', input_modality, '[Gaussian distribution]', 'to', output_modality)
-                if modalities[output_modality] == 'ber':
-                    output_distribution = modalities[output_modality]
-                    set_seed(SEED)
-                    decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
-                                                                    output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                                                    hidden_layer = hidden_layer,
-                                                                    infer_library_size = infer_library_size_atac,
-                                                                    sample_factor = sample_factor_atac,
-                                                                    feature_factor = feature_factor_atac)
-                    if infer_library_size_atac is True:
-                        trainLib = None
-                        valLib = None
-                        testLib = None
-                    else:
-                        trainLib = train_data_dict[output_modality + '_train_lib']
-                        valLib = val_data_dict[output_modality + '_val_lib'].to(device)
-                        if test_data_dict is not None:
-                            testLib = test_data_dict[output_modality + '_test_lib'].to(device)
-                    print('Set up decoder from', input_modality, 'to', output_modality)
-                elif modalities[output_modality] == 'zinb' or modalities[output_modality] == 'nb':
-                    output_distribution = modalities[output_modality]
-                    if zero_inflated is True and output_distribution != 'zinb':
-                        raise ValueError('zero_inflated should be True when output_distribution is zinb')
-                    set_seed(SEED)
-                    decoder = self.output_module[output_distribution](output_dim = train_data_dict[output_modality + '_train_mtx'].shape[1],
-                                                                        output_batch_num = train_data_dict[output_modality + '_train_cov'].shape[1] if cov is not None else 0,
-                                                                        hidden_layer = hidden_layer,
-                                                                        infer_library_size = infer_library_size_rna,
-                                                                        sample_factor = sample_factor_rna,
-                                                                        feature_factor = feature_factor_rna,
-                                                                        zero_inflated = zero_inflated,
-                                                                        dispersion = dispersion)
-                    if infer_library_size_rna is True:
-                        trainLib = None
-                        valLib = None
-                        testLib = None
-                    else:
-                        trainLib = train_data_dict[output_modality + '_train_lib']
-                        valLib = val_data_dict[output_modality + '_val_lib'].to(device)
-                        if test_data_dict is not None:
-                            testLib = test_data_dict[output_modality + '_test_lib'].to(device)
-                    print('Set up decoder from', input_modality, 'to', output_modality)
+                        raise ValueError('scPair distribution should be one of the following: zinb, nb, ber, gau')
             else:
                 raise ValueError('scPair distribution should be one of the following: zinb, nb, ber, gau')
-            encoder.apply(init_weights)
-            encoder.to(device)
-            decoder.apply(init_weights)
-            decoder.to(device)
-            output_layers = ['output']
-            decay_param_encoder, nodecay_param_encoder, decay_name_encoder, nodecay_name_encoder = add_weight_decay(encoder, output_layer=output_layers)
-            decay_param_decoder, nodecay_param_decoder, decay_name_decoder, nodecay_name_decoder = add_weight_decay(decoder, output_layer=output_layers)
-            optimizer = torch.optim.AdamW([{'params': decay_param_encoder, 'weight_decay':L2_lambda, 'lr': learning_rate_prediction},
-                                        {'params': decay_param_decoder, 'weight_decay':L2_lambda, 'lr': learning_rate_prediction},
-                                        {'params': nodecay_param_encoder, 'weight_decay':0, 'lr': learning_rate_prediction}, 
-                                        {'params': nodecay_param_decoder, 'weight_decay':0, 'lr': learning_rate_prediction}])
-            if weight_decay == 'ExponentialLR':
-                scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1)
-            elif weight_decay == 'StepLR':
-                scheduler = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=25, gamma=0.1, last_epoch=-1)
-            elif weight_decay == 'ReduceLROnPlateau':
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='min', factor=0.1, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
-            else:
-                scheduler = None
-                Warning('weight_decay should be one of the following: ExponentialLR, StepLR, ReduceLROnPlateau. No weight decay applied.')
-            if trainLib is not None:
-                train_data = TensorDataset(trainData.to(device), trainBatch.to(device), trainLib.to(device), trainLabel.to(device)) if cov is not None else TensorDataset(trainData.to(device), trainLib.to(device), trainLabel.to(device))
-            else:
-                train_data = TensorDataset(trainData.to(device), trainBatch.to(device), trainLabel.to(device)) if cov is not None else TensorDataset(trainData.to(device), trainLabel.to(device))
+            # Apply weight initialization and move to device
+            encoder.apply(init_weights).to(self.device)
+            decoder.apply(init_weights).to(self.device)
+            # Set up optimizer and scheduler
+            decay_param_encoder, nodecay_param_encoder, _, _ = add_weight_decay(encoder, output_layer=['output'])
+            decay_param_decoder, nodecay_param_decoder, _, _ = add_weight_decay(decoder, output_layer=['output'])
+            optimizer = torch.optim.AdamW([{'params': decay_param_encoder, 'weight_decay': self.L2_lambda, 'lr': self.learning_rate_prediction},
+                                        {'params': decay_param_decoder, 'weight_decay': self.L2_lambda, 'lr': self.learning_rate_prediction},
+                                        {'params': nodecay_param_encoder, 'weight_decay': 0, 'lr': self.learning_rate_prediction}, 
+                                        {'params': nodecay_param_decoder, 'weight_decay': 0, 'lr': self.learning_rate_prediction}])
+            scheduler = self.get_scheduler(optimizer)
+            # Prepare training data
+            train_data = TensorDataset(trainData.to(self.device), *(trainBatch.to(self.device),) if self.cov is not None else (), *(trainLib.to(self.device),) if trainLib is not None else (), trainLabel.to(self.device))
             from torch.utils.data import DataLoader, Dataset
-            set_seed(SEED)
-            DataLoader_train = DataLoader(train_data, batch_size=batch_size, shuffle=True)
-            if early_stopping_activation is True:
-                early_stopping_patience = self.early_stopping_patience
-                epochs_no_improve = 0
-                early_stop = False
-                min_val_loss = np.inf
-                print('Enabling early stopping with patience of', early_stopping_patience)
+            set_seed(self.SEED)
+            DataLoader_train = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
+            # Set up early stopping if enabled
+            early_stopping_patience, epochs_no_improve, early_stop, min_val_loss = (self.early_stopping_patience, 0, False, np.inf) if self.early_stopping_activation else (None, None, None, None)
+            print('Enabling early stopping with patience of', early_stopping_patience) if self.early_stopping_activation else None
+            # Print training start message
             text = '\033[95m' + 'Start training feature predictor: {} '.format(prediction_order) + '\033[0m'            
             print('#' * (len(text)-5))
             print('# ' + text + ' #')
             print('#' * (len(text)-5))
-            pbar = tqdm.tqdm(range(max_epochs))
+            pbar = tqdm.tqdm(range(self.max_epochs))
             for epoch in pbar:
                 training_mode(encoder, decoder)
-                if trainLib is not None:
-                    if cov is not None:
-                        for idx, (x, b, lib, y) in enumerate(DataLoader_train):
-                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
+                for idx, data in enumerate(DataLoader_train):
+                    if trainLib is not None:
+                        if self.cov is not None:
+                            x, b, lib, y = data
+                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
+                        else:
+                            x, lib, y = data
+                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
                     else:
-                        for idx, (x, lib, y) in enumerate(DataLoader_train):
-                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=modalities[output_modality])
-                else:
-                    if cov is not None:
-                        for idx, (x, b, y) in enumerate(DataLoader_train):
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
-                    else:
-                        for idx, (x, y) in enumerate(DataLoader_train):
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=modalities[output_modality])
+                        if self.cov is not None:
+                            x, b, y = data
+                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
+                        else:
+                            x, y = data
+                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
+                # Evaluate the model
                 evaluating_mode(encoder, decoder)
                 with torch.no_grad():
-                    if valLib is not None:
-                        if cov is not None:
-                            val_total_loss = eval_net(valData, valLabel, valLib, encoder, decoder, likelihood_type=modalities[output_modality], add_cov=True, input_batch=valBatch, output_batch=valBatch)
-                        else:
-                            val_total_loss = eval_net(valData, valLabel, valLib, encoder, decoder, likelihood_type=modalities[output_modality])
-                    else:
-                        if cov is not None:
-                            val_total_loss = eval_net(valData, valLabel, None, encoder, decoder, likelihood_type=modalities[output_modality], add_cov=True, input_batch=valBatch, output_batch=valBatch)
-                        else:
-                            val_total_loss = eval_net(valData, valLabel, None, encoder, decoder, likelihood_type=modalities[output_modality])
+                    val_total_loss = eval_net(valData, valLabel, valLib if valLib is not None else None, encoder, decoder, likelihood_type=self.modalities[output_modality], add_cov=self.cov is not None, input_batch=valBatch, output_batch=valBatch)
                     pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
-                    # tqdm.tqdm.write("Epoch [{}/{}], validation: Loss: {:.4f}".format(epoch+1, max_epochs, val_total_loss.item()))
-                if optimizer.param_groups[0]['lr'] > 1e-7:
-                    # print(optimizer.param_groups[0]['lr'])
-                    if weight_decay == 'ExponentialLR':
-                        scheduler.step()
-                    elif weight_decay == 'StepLR':
-                        scheduler.step()
-                    elif weight_decay == 'ReduceLROnPlateau':
-                        scheduler.step()
-                    else:
-                        pass
+                # Update the scheduler
+                if optimizer.param_groups[0]['lr'] > 1e-7 and self.weight_decay in ['ExponentialLR', 'StepLR', 'ReduceLROnPlateau']:
+                    scheduler.step()
+                # Check for early stopping
                 if val_total_loss.item() < min_val_loss:
                     epochs_no_improve = 0
                     min_val_loss = val_total_loss.item()
@@ -734,33 +637,37 @@ class scPair_object():
                 else:
                     epochs_no_improve += 1
                     pbar.set_postfix({'Message': 'Early stopping triggered!', 'Patience Left': early_stopping_patience - epochs_no_improve})
-                    # tqdm.tqdm.write("Early stopping triggered!", early_stopping_patience - epochs_no_improve)
                 if epoch > 1 and epochs_no_improve == early_stopping_patience:
                     print("Early Stopped!")
                     early_stop = True
                     break
                 else:
                     continue
+            # Save the trained models
             encoder_dict[input_modality + ' to ' + output_modality] = copy.deepcopy(encoder_ckpt.eval())
             decoder_dict[input_modality + ' to ' + output_modality] = copy.deepcopy(decoder_ckpt.eval())
-            if save_model is True:
-                if save_path is None:
-                    save_path = os.getcwd()
-                torch.save(encoder_dict[input_modality + ' to ' + output_modality], save_path + '/encoder_' + input_modality + '_to_' + output_modality + '.pt')
-                torch.save(decoder_dict[input_modality + ' to ' + output_modality], save_path + '/decoder_' + input_modality + '_to_' + output_modality + '.pt')
+            if self.save_model is True:
+                if self.save_path is None:
+                    self.save_path = os.getcwd()
+                torch.save(encoder_dict[input_modality + ' to ' + output_modality], self.save_path + '/encoder_' + input_modality + '_to_' + output_modality + '.pt')
+                torch.save(decoder_dict[input_modality + ' to ' + output_modality], self.save_path + '/decoder_' + input_modality + '_to_' + output_modality + '.pt')
         return encoder_dict, decoder_dict
     def train_bidirectional_mapping(self):
         embedding_dim = self.hidden_layer[-1]
-        modality_names = self.modality_names
         mapping_dict = {}
-        for input_modality in modality_names:
-            output_modality = [mn for mn in modality_names if mn != input_modality][0]
+        for input_modality in self.modality_names:
+            output_modality = [mn for mn in self.modality_names if mn != input_modality][0]
             print('mapping direction:', input_modality, 'to', output_modality)
+            # Prepare training data
             input_embedding_train = self.embeddings[input_modality + '_train']
             output_embedding_train = self.embeddings[output_modality + '_train']
             input_embedding_val = self.embeddings[input_modality + '_val']
             output_embedding_val = self.embeddings[output_modality + '_val']
             trainData = TensorDataset(input_embedding_train.to(self.device), output_embedding_train.to(self.device))
+            from torch.utils.data import DataLoader, Dataset
+            set_seed(self.SEED)
+            DataLoader_train = DataLoader(trainData, batch_size=self.batch_size, shuffle=True)
+            # Initialize mapping network
             mapping_network = self.mapping_module(origin_module_dim = embedding_dim,
                                                 target_module_dim = embedding_dim,
                                                 translational_hidden_nodes = self.mapping_hidden_nodes,
@@ -769,34 +676,21 @@ class scPair_object():
                                                 layernorm = self.mapping_layernorm,
                                                 batchnorm = self.mapping_batchnorm,
                                                 dropout_rate = self.mapping_dropout_rate)
-            mapping_network.apply(init_weights)
-            mapping_network.to(self.device)
-            decay_param, nodecay_param, decay_name, nodecay_name = add_weight_decay(mapping_network, output_layer="bias")
+            mapping_network.apply(init_weights).to(self.device)
+            # Set up optimizer and scheduler
+            decay_param, nodecay_param, _, _ = add_weight_decay(mapping_network, output_layer="bias")
             optimizer = torch.optim.AdamW([{'params': decay_param, 'weight_decay': self.L2_lambda, 'lr': self.mapping_learning_rate},
                                         {'params': nodecay_param, 'weight_decay':0, 'lr': self.mapping_learning_rate}])
-            if self.weight_decay == 'ExponentialLR':
-                scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1)
-            elif self.weight_decay == 'StepLR':
-                scheduler = torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=25, gamma=0.1, last_epoch=-1)
-            elif self.weight_decay == 'ReduceLROnPlateau':
-                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='min', factor=0.1, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
-            else:
-                scheduler = None
-                Warning('weight_decay should be one of the following: ExponentialLR, StepLR, ReduceLROnPlateau. No weight decay applied.')
-            from torch.utils.data import DataLoader, Dataset
-            set_seed(self.SEED)
-            DataLoader_train = DataLoader(trainData, batch_size=self.batch_size, shuffle=True)
-            if self.early_stopping_activation is True:
-                early_stopping_patience = self.early_stopping_patience
-                epochs_no_improve = 0
-                early_stop = False
-                min_val_loss = np.inf
-                print('Enabling early stopping with patience of', early_stopping_patience)
-            # print('#### Start mapping {} embeddings: ####'.format(input_modality + ' to ' + output_modality))
+            scheduler = self.get_scheduler(optimizer)
+            # Set up early stopping if enabled
+            early_stopping_patience, epochs_no_improve, early_stop, min_val_loss = (self.early_stopping_patience, 0, False, np.inf) if self.early_stopping_activation else (None, None, None, None)
+            print('Enabling early stopping with patience of', early_stopping_patience) if self.early_stopping_activation else None
+            # Print training start message
             text = '\033[95m' + 'Start mapping {} embeddings'.format(input_modality + ' to ' + output_modality) + '\033[0m'            
             print('#' * (len(text)-5))
             print('# ' + text + ' #')
             print('#' * (len(text)-5))
+            # Start training
             pbar = tqdm.tqdm(range(self.max_epochs))
             for epoch in pbar:
                 mapping_network.train();
@@ -811,17 +705,8 @@ class scPair_object():
                     val_pred_emb = mapping_network(input_embedding_val.to(self.device))
                     val_total_loss = scaled_loss(output_embedding_val.to(self.device), val_pred_emb)
                     pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
-                    # tqdm.tqdm.write("Epoch [{}/{}], validation: Loss: {:.4f}".format(epoch+1, self.max_epochs, val_total_loss.item()))
-                if optimizer.param_groups[0]['lr'] > 1e-7:
-                    # print(optimizer.param_groups[0]['lr'])
-                    if self.weight_decay == 'ExponentialLR':
-                        scheduler.step()
-                    elif self.weight_decay == 'StepLR':
-                        scheduler.step()
-                    elif self.weight_decay == 'ReduceLROnPlateau':
-                        scheduler.step()
-                    else:
-                        pass
+                if optimizer.param_groups[0]['lr'] > 1e-7 and self.weight_decay in ['ExponentialLR', 'StepLR', 'ReduceLROnPlateau']:
+                    scheduler.step()
                 if val_total_loss.item() < min_val_loss:
                     epochs_no_improve = 0
                     min_val_loss = val_total_loss.item()
@@ -829,7 +714,6 @@ class scPair_object():
                 else:
                     epochs_no_improve += 1
                     pbar.set_postfix({'Message': 'Early stopping triggered!', 'Patience Left': early_stopping_patience - epochs_no_improve})
-                    # tqdm.tqdm.write("Early stopping triggered!", early_stopping_patience - epochs_no_improve)
                 if epoch > 1 and epochs_no_improve == early_stopping_patience:
                     print("Early Stopped!")
                     early_stop = True
@@ -837,159 +721,36 @@ class scPair_object():
                 else:
                     continue
             mapping_dict[input_modality + '_to_' + output_modality] = copy.deepcopy(mapping_network_ckpt)
+            # Save the trained model
             if self.save_model is True:
                 if self.save_path is None:
                     self.save_path = os.getcwd()
                 torch.save(mapping_dict[input_modality + '_to_' + output_modality], self.save_path + '/mapping_' + input_modality + '_to_' + output_modality + '.pt')
         return mapping_dict
-    def reference_embeddings(self):
-        data_loader_dict_train, data_loader_dict_val, data_loader_dict_test = self.data_loader_dict_train, self.data_loader_dict_val, self.data_loader_dict_test
-        modality_names = self.modality_names
-        cov = self.cov
-        embeddings = {}
-        df_embeddings = {}
-        for modality in modality_names:
-            # print('predicting from', modality)
-            encoder_cal = self.encoder_dict[modality + ' to ' + [mn for mn in modality_names if mn != modality][0]]
-            encoder_cal.eval()
-            encoder_cal.to(self.device)
-            embeddings[modality + "_train"] = encoder_cal(data_loader_dict_train[modality + '_train_mtx'].to(self.device), data_loader_dict_train[modality + '_train_cov'].to(self.device))[0].cpu().detach() if cov is not None else encoder_cal(data_loader_dict_train[modality + '_train_mtx'].to(self.device), None)[0].cpu().detach()
-            embeddings[modality + "_val"] = encoder_cal(data_loader_dict_val[modality + '_val_mtx'].to(self.device), data_loader_dict_val[modality + '_val_cov'].to(self.device))[0].cpu().detach() if cov is not None else encoder_cal(data_loader_dict_val[modality + '_val_mtx'].to(self.device), None)[0].cpu().detach()
-            if data_loader_dict_test is not None:
-                embeddings[modality + "_test"] = encoder_cal(data_loader_dict_test[modality + '_test_mtx'].to(self.device), data_loader_dict_test[modality + '_test_cov'].to(self.device))[0].cpu().detach() if cov is not None else encoder_cal(data_loader_dict_test[modality + '_test_mtx'].to(self.device), None)[0].cpu().detach()
-            df_embeddings[modality + "_train"] = pd.DataFrame(embeddings[modality + "_train"].numpy(), index = self.train_metadata.index)
-            df_embeddings[modality + "_val"] = pd.DataFrame(embeddings[modality + "_val"].numpy(), index = self.val_metadata.index)
-            if data_loader_dict_test is not None:
-                df_embeddings[modality + "_test"] = pd.DataFrame(embeddings[modality + "_test"].numpy(), index = self.test_metadata.index)
-        self.embeddings = embeddings
-        return embeddings, df_embeddings
-    def mapped_embeddings(self):
-        modality_names = self.modality_names
-        mapping_dict = self.mapping_dict
-        embeddings = self.embeddings
-        mapped_embeddings = {}
-        df_mapped_embeddings = {}
-        for input_modality in modality_names:
-            output_modality = [mn for mn in modality_names if mn != input_modality][0]
-            # print('mapping direction:', input_modality, 'to', output_modality)
-            input_embedding_train = embeddings[input_modality + '_train']
-            output_embedding_train = embeddings[output_modality + '_train']
-            input_embedding_val = embeddings[input_modality + '_val']
-            output_embedding_val = embeddings[output_modality + '_val']
-            input_embedding_test = embeddings[input_modality + '_test'] if self.data_loader_dict_test is not None else None
-            output_embedding_test = embeddings[output_modality + '_test'] if self.data_loader_dict_test is not None else None
-            mapping_network = mapping_dict[input_modality + '_to_' + output_modality]
-            mapping_network.eval()
-            mapping_network.to(self.device)
-            mapped_embeddings[input_modality + ' to ' + output_modality + '_train'] = mapping_network(input_embedding_train.to(self.device)).cpu().detach()
-            mapped_embeddings[input_modality + ' to ' + output_modality + '_val'] = mapping_network(input_embedding_val.to(self.device)).cpu().detach()
-            if self.data_loader_dict_test is not None:
-                mapped_embeddings[input_modality + ' to ' + output_modality + '_test'] = mapping_network(input_embedding_test.to(self.device)).cpu().detach()
-            df_mapped_embeddings[input_modality + ' to ' + output_modality + '_train'] = pd.DataFrame(mapped_embeddings[input_modality + ' to ' + output_modality + '_train'].numpy(), index = self.train_metadata.index)
-            df_mapped_embeddings[input_modality + ' to ' + output_modality + '_val'] = pd.DataFrame(mapped_embeddings[input_modality + ' to ' + output_modality + '_val'].numpy(), index = self.val_metadata.index)
-            if self.data_loader_dict_test is not None:
-                df_mapped_embeddings[input_modality + ' to ' + output_modality + '_test'] = pd.DataFrame(mapped_embeddings[input_modality + ' to ' + output_modality + '_test'].numpy(), index = self.test_metadata.index)
-        return mapped_embeddings, df_mapped_embeddings
-    def predict(self):
-        data_loader_dict_train, data_loader_dict_val, data_loader_dict_test = self.data_loader_dict_train, self.data_loader_dict_val, self.data_loader_dict_test
-        modality_names = self.modality_names
-        embeddings = self.embeddings
-        decoder_dict = self.decoder_dict
-        predictions = {}
-        for input_modality in modality_names:
-            output_modality = [mn for mn in modality_names if mn != input_modality][0]
-            input_distribution = self.modalities[input_modality]
-            output_distribution = self.modalities[output_modality]
-            print('predicting from', input_modality, 'to', output_modality)
-            print('input_distribution:', input_distribution, 'output_distribution:', output_distribution)
-            decoder_cal = decoder_dict[input_modality + ' to ' + output_modality]
-            decoder_cal.eval()
-            decoder_cal.to(self.device)
-            if output_distribution == 'ber' and output_modality == 'Peaks' and self.infer_library_size_atac is True:
-                encoder_cal = self.encoder_dict[input_modality + ' to ' + output_modality]
-                encoder_cal.eval()
-                encoder_cal.to(self.device)
-                _, latent_train = encoder_cal(data_loader_dict_train[input_modality + '_train_mtx'].to(self.device), 
-                                              data_loader_dict_train[input_modality + '_train_cov'].to(self.device) if self.cov is not None else None)
-                _, latent_val = encoder_cal(data_loader_dict_val[input_modality + '_val_mtx'].to(self.device),
-                                            data_loader_dict_val[input_modality + '_val_cov'].to(self.device) if self.cov is not None else None)
-                if data_loader_dict_test is not None:
-                    _, latent_test = encoder_cal(data_loader_dict_test[input_modality + '_test_mtx'].to(self.device),
-                                                 data_loader_dict_test[input_modality + '_test_cov'].to(self.device) if self.cov is not None else None)
-            elif output_distribution == 'nb' or output_distribution == 'zinb':
-                if output_modality == 'Gene Expression' and self.infer_library_size_rna is True:
-                    encoder_cal = self.encoder_dict[input_modality + ' to ' + output_modality]
-                    encoder_cal.eval()
-                    encoder_cal.to(self.device)
-                    _, latent_train = encoder_cal(data_loader_dict_train[input_modality + '_train_mtx'].to(self.device),
-                                                  data_loader_dict_train[input_modality + '_train_cov'].to(self.device) if self.cov is not None else None)
-                    _, latent_val = encoder_cal(data_loader_dict_val[input_modality + '_val_mtx'].to(self.device),
-                                                data_loader_dict_val[input_modality + '_val_cov'].to(self.device) if self.cov is not None else None)
-                    if data_loader_dict_test is not None:
-                        _, latent_test = encoder_cal(data_loader_dict_test[input_modality + '_test_mtx'].to(self.device),
-                                                     data_loader_dict_test[input_modality + '_test_cov'].to(self.device) if self.cov is not None else None)
-            else:
-                latent_train = None
-                latent_val = None
-                latent_test = None
-            if output_distribution == 'zinb' or output_distribution == 'nb' or output_distribution == 'ber':
-                predictions[output_modality + "_train"] = decoder_cal(latent_rep = embeddings[input_modality + '_train'].to(self.device),
-                                                                    output_batch = data_loader_dict_train[output_modality + '_train_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = torch.FloatTensor([1]).to(self.device),
-                                                                    latent_lib = latent_train)[0].cpu().detach().numpy()
-                predictions[output_modality + "_val"] = decoder_cal(latent_rep = embeddings[input_modality + '_val'].to(self.device),
-                                                                    output_batch = data_loader_dict_val[output_modality + '_val_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = torch.FloatTensor([1]).to(self.device),
-                                                                    latent_lib = latent_val)[0].cpu().detach().numpy()
-                if data_loader_dict_test is not None:
-                    predictions[output_modality + "_test"] = decoder_cal(latent_rep = embeddings[input_modality + '_test'].to(self.device),
-                                                                    output_batch = data_loader_dict_test[output_modality + '_test_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = torch.FloatTensor([1]).to(self.device),
-                                                                    latent_lib = latent_test)[0].cpu().detach().numpy()
-            elif output_distribution == 'gau':
-                print('output_distribution is Normal Distribution')
-                predictions[output_modality + "_train"] = decoder_cal(latent_rep = embeddings[input_modality + '_train'].to(self.device),
-                                                                    output_batch = data_loader_dict_train[output_modality + '_train_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = None,
-                                                                    latent_lib = None).cpu().detach().numpy()
-                predictions[output_modality + "_val"] = decoder_cal(latent_rep = embeddings[input_modality + '_val'].to(self.device),
-                                                                    output_batch = data_loader_dict_val[output_modality + '_val_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = None,
-                                                                    latent_lib = None).cpu().detach().numpy()
-                if data_loader_dict_test is not None:
-                    predictions[output_modality + "_test"] = decoder_cal(latent_rep = embeddings[input_modality + '_test'].to(self.device),
-                                                                    output_batch = data_loader_dict_test[output_modality + '_test_cov'].to(self.device) if self.cov is not None else None,
-                                                                    lib = None,
-                                                                    latent_lib = None).cpu().detach().numpy()
-        return predictions
     def augment(self, unimodal_scobj, unimodal_modalities, unimodal_cov = None):
-        self.unimodal_scobj = unimodal_scobj
-        self.unimodal_cov = unimodal_cov
-        self.unimodal_modalities = unimodal_modalities
+        # Set up unimodal data
+        self.unimodal_scobj, self.unimodal_modalities, self.unimodal_cov = unimodal_scobj, unimodal_modalities, unimodal_cov
         self.unimodal_modality_names = list(unimodal_modalities.keys())
         self.unimodal_modality_distributions = list(unimodal_modalities.values())
-        if set(self.unimodal_modality_names).issubset(self.modalities.keys()):
-            print('Found matched modality and corresponding distribution for unimodal data...')
-            print('Modality:', self.unimodal_modality_names, 'Distribution:', self.unimodal_modality_distributions)
-        else:
+        # Check if unimodal data matches multimodal data's counterpart
+        if not set(self.unimodal_modality_names).issubset(self.modalities.keys()):
             print('Paired multimodal data:', self.modalities)
             print('Unimodal data:', self.unimodal_modalities)
             raise ValueError('Unimodal data should have the same modality as one of the multimodal data')
+        # Handle covariate matrix
         if self.unimodal_cov != self.cov:
-            if self.unimodal_cov is not None and self.cov is not None:
-                raise ValueError('Unimodal data have totally different covariate matrix compared to multimodal data')
-            elif self.unimodal_cov is None and self.cov is not None:
+            if self.unimodal_cov is None and self.cov is not None:
                 self.unimodal_cov = self.cov
                 self.unimodal_cov_dummy = pd.DataFrame(data=np.zeros((self.unimodal_scobj.shape[0], self.cov_dummy.shape[1])), columns=self.cov_dummy.columns, index=self.unimodal_scobj.obs.index)
                 print('Using multimodal cov for unimodal data, and set unimodal cov to all zeros during scPair_augment training')
             elif self.unimodal_cov is not None and self.cov is None:
                 raise ValueError('Unimodal data have covariate matrix while multimodal data do not')
-            #     print('Using unimodal cov = None for unimodal data during inference, and set multimodal cov to all zeros to match the dimension during scPair_augment training')
-            #     self.unimodal_cov_dummy = pd.get_dummies(self.unimodal_scobj.obs[self.unimodal_cov])
-            #     self.cov_dummy_ = pd.DataFrame(data=np.zeros((self.scobj.shape[0], self.unimodal_cov_dummy.shape[1])), columns=self.unimodal_cov_dummy.columns, index=self.scobj.obs.index)
+                # print('Using unimodal cov = None for unimodal data during inference, and set multimodal cov to all zeros to match the dimension during scPair_augment training')
+                # self.unimodal_cov_dummy = pd.get_dummies(self.unimodal_scobj.obs[self.unimodal_cov])
+                # self.cov_dummy_ = pd.DataFrame(data=np.zeros((self.scobj.shape[0], self.unimodal_cov_dummy.shape[1])), columns=self.unimodal_cov_dummy.columns, index=self.scobj.obs.index)
             else:
-                self.unimodal_cov = None
-                self.unimodal_cov_dummy = None
+                self.unimodal_cov, self.unimodal_cov_dummy = None, None
+        # Prepare data input of the augment encoder
         unimodal_train_input = torch.FloatTensor(self.unimodal_scobj.X.toarray()) if scipy.sparse.issparse(self.unimodal_scobj.X) else torch.FloatTensor(self.unimodal_scobj.X)
         unimodal_train_batch = torch.FloatTensor(self.unimodal_cov_dummy.to_numpy()) if self.unimodal_cov is not None else None
         bimodal_train_input = self.data_loader_dict_train[self.unimodal_modality_names[0] + '_train_mtx']
@@ -998,84 +759,83 @@ class scPair_object():
         bimodal_val_batch = self.data_loader_dict_val[self.unimodal_modality_names[0] + '_val_cov'] if self.cov is not None else None
         bimodal_test_input = self.data_loader_dict_test[self.unimodal_modality_names[0] + '_test_mtx'] if self.data_loader_dict_test is not None else None
         bimodal_test_batch = self.data_loader_dict_test[self.unimodal_modality_names[0] + '_test_cov'] if self.cov is not None and self.data_loader_dict_test is not None else None
+        # Prepare original pre-trained encoder
         encoder_to_be_updated = copy.deepcopy(self.encoder_dict[self.unimodal_modality_names[0] + ' to ' + [mn for mn in self.modalities.keys() if mn != self.unimodal_modality_names[0]][0]])
         encoder_to_be_updated.to(self.device)
         encoder_to_be_updated.eval()
-        unimodal_train_label = encoder_to_be_updated(unimodal_train_input.to(self.device), unimodal_train_batch.to(self.device) if self.unimodal_cov is not None else None)[0].detach()
-        bimodal_train_label = encoder_to_be_updated(bimodal_train_input.to(self.device), bimodal_train_batch.to(self.device) if self.cov is not None else None)[0].detach()
-        bimodal_val_label = encoder_to_be_updated(bimodal_val_input.to(self.device), bimodal_val_batch.to(self.device) if self.cov is not None else None)[0].detach()
-        if bimodal_test_input is not None:
-            bimodal_test_label = encoder_to_be_updated(bimodal_test_input.to(self.device), bimodal_test_batch.to(self.device) if self.cov is not None else None)[0].detach()
-        else:
-            bimodal_test_label = None
-        if self.unimodal_cov is not None:
-            trainData = TensorDataset(unimodal_train_input.to(self.device), unimodal_train_batch.to(self.device), unimodal_train_label.to(self.device))
-        else:
-            trainData = TensorDataset(unimodal_train_input.to(self.device), unimodal_train_label.to(self.device))
-        # unimodal_val_input/batch/label here will be used for early stopping: concat bimodal train and val data
+        # Function to prepare labels/outputs of the augment encoder
+        def prepare_labels(input_data, batch_data):
+            input_data = input_data.to(self.device)
+            batch_data = batch_data.to(self.device) if batch_data is not None else None
+            return encoder_to_be_updated(input_data, batch_data)[0].detach()
+        # Prepare data output of the augment encoder
+        unimodal_train_label = prepare_labels(unimodal_train_input, unimodal_train_batch)
+        bimodal_train_label = prepare_labels(bimodal_train_input, bimodal_train_batch)
+        bimodal_val_label = prepare_labels(bimodal_val_input, bimodal_val_batch)
+        bimodal_test_label = prepare_labels(bimodal_test_input, bimodal_test_batch) if bimodal_test_input is not None else None
+        # Prepare training data
+        trainData = TensorDataset(unimodal_train_input.to(self.device), *(unimodal_train_batch.to(self.device),) if unimodal_train_batch is not None else (), unimodal_train_label.to(self.device))
+        # bimodal_val_input/batch/label here will be used for early stopping: concat bimodal train and val data
         unimodal_val_input = torch.cat((bimodal_train_input, bimodal_val_input), 0).to(self.device)
         unimodal_val_batch = torch.cat((bimodal_train_batch, bimodal_val_batch), 0).to(self.device) if self.unimodal_cov is not None else None
         unimodal_val_label = torch.cat((bimodal_train_label, bimodal_val_label), 0).to(self.device)
-        pbar = tqdm.tqdm(range(self.max_epochs))
+        # Data loader for training
+        from torch.utils.data import DataLoader, Dataset
+        set_seed(self.SEED)
+        DataLoader_train = DataLoader(trainData, batch_size=self.batch_size, shuffle=True)
+        # Initialize optimizer
         optimizer_unimodal = torch.optim.AdamW(encoder_to_be_updated.parameters(), lr=self.learning_rate_prediction, weight_decay=self.L2_lambda)
-        if self.early_stopping_activation is True:
-            early_stopping_patience = self.early_stopping_patience
-            epochs_no_improve = 0
-            early_stop = False
-            min_val_loss = np.inf
-            print('Enabling early stopping with patience of', early_stopping_patience)
+        # Set up early stopping if enabled
+        early_stopping_patience, epochs_no_improve, early_stop, min_val_loss = (self.early_stopping_patience, 0, False, np.inf) if self.early_stopping_activation else (None, None, None, None)
+        print('Enabling early stopping with patience of', early_stopping_patience) if self.early_stopping_activation else None
         augment_encoder_dict = {}
+        pbar = tqdm.tqdm(range(self.max_epochs))
         for epoch in pbar:
-            if self.unimodal_cov is not None:
-                encoder_to_be_updated.train()
-                for idx, (x, b, y) in enumerate(DataLoader(trainData, batch_size=self.batch_size, shuffle=True)):
-                    pred = encoder_to_be_updated(x, b if self.unimodal_cov is not None else None)[0]
-                    loss = scaled_loss(y, pred)
-                    optimizer_unimodal.zero_grad()
-                    loss.backward()
-                    optimizer_unimodal.step()
-            else:
-                for idx, (x, y) in enumerate(DataLoader(trainData, batch_size=self.batch_size, shuffle=True)):
-                    pred = encoder_to_be_updated(x, None)[0]
-                    loss = scaled_loss(y, pred)
-                    optimizer_unimodal.zero_grad()
-                    loss.backward()
-                    optimizer_unimodal.step()
+            encoder_to_be_updated.train()
+            for idx, data in enumerate(DataLoader_train):
+                x, *b, y = data
+                b = b[0] if b else None
+                pred = encoder_to_be_updated(x, b)[0]
+                loss = scaled_loss(y, pred)
+                optimizer_unimodal.zero_grad()
+                loss.backward()
+                optimizer_unimodal.step()
             encoder_to_be_updated.eval()
             with torch.no_grad():
-                if self.unimodal_cov is not None:
-                    val_total_loss = scaled_loss(unimodal_val_label, encoder_to_be_updated(unimodal_val_input, unimodal_val_batch)[0])
-                else:
-                    val_total_loss = scaled_loss(unimodal_val_label, encoder_to_be_updated(unimodal_val_input, None)[0])
+                val_total_loss = scaled_loss(unimodal_val_label, encoder_to_be_updated(unimodal_val_input, unimodal_val_batch if self.unimodal_cov is not None else None)[0])
+                pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
+            # Check for early stopping
             if val_total_loss.item() < min_val_loss:
                 epochs_no_improve = 0
                 min_val_loss = val_total_loss.item()
                 self.augment_encoder_ckpt = copy.deepcopy(encoder_to_be_updated)
             else:
                 epochs_no_improve += 1
-            if epochs_no_improve == early_stopping_patience:
+            if epoch > 1 and epochs_no_improve == early_stopping_patience:
                 print("Early Stopped!")
                 early_stop = True
                 break
             else:
                 continue
         self.augment_encoder_ckpt.eval()
+        # Save the trained model: augmented encoder
         if self.save_model is True:
             if self.save_path is None:
                 self.save_path = os.getcwd()
             torch.save(self.augment_encoder_ckpt, self.save_path + '/augment_encoder_' + self.unimodal_modality_names[0] + '_to_' + [mn for mn in self.modalities.keys() if mn != self.unimodal_modality_names[0]][0] + '.pt')
         augment_encoder_dict['scPair_augment: ' + self.unimodal_modality_names[0] + ' to ' + [mn for mn in self.modalities.keys() if mn != self.unimodal_modality_names[0]][0]] = copy.deepcopy(self.augment_encoder_ckpt)
         self.augment_encoder_dict = augment_encoder_dict
+        # Initialize dictionary to store updated embeddings
         augment_emb = {}
-        unimodal_predictions = self.augment_encoder_ckpt(unimodal_train_input.to(self.device), unimodal_train_batch.to(self.device) if self.unimodal_cov is not None else None)[0].cpu().detach().numpy()
-        augment_emb[self.unimodal_modality_names[0] + '_train_unimodal'] = unimodal_predictions
-        bimodal_train_predictions = self.augment_encoder_ckpt(bimodal_train_input.to(self.device), bimodal_train_batch.to(self.device) if self.cov is not None else None)[0].cpu().detach().numpy()
-        augment_emb[self.unimodal_modality_names[0] + '_train_bimodal'] = bimodal_train_predictions
-        bimodal_val_predictions = self.augment_encoder_ckpt(bimodal_val_input.to(self.device), bimodal_val_batch.to(self.device) if self.cov is not None else None)[0].cpu().detach().numpy()
-        augment_emb[self.unimodal_modality_names[0] + '_val_bimodal'] = bimodal_val_predictions
-        if bimodal_test_input is not None:
-            bimodal_test_predictions = self.augment_encoder_ckpt(bimodal_test_input.to(self.device), bimodal_test_batch.to(self.device) if self.cov is not None else None)[0].cpu().detach().numpy()
-            augment_emb[self.unimodal_modality_names[0] + '_test_bimodal'] = bimodal_test_predictions
-        else:
-            bimodal_test_predictions = None
+        # Define a helper function to generate predictions
+        def generate_predictions(input_data, batch_data):
+            return self.augment_encoder_ckpt(input_data.to(self.device), batch_data.to(self.device) if self.cov is not None else None)[0].cpu().detach().numpy()
+        # Generate updated embeddings
+        for split in ['unimodal_train', 'bimodal_train', 'bimodal_val', 'bimodal_test']:
+            if split == 'bimodal_test' and bimodal_test_input is None:
+                continue
+            input_data = locals()[f'{split}_input']
+            batch_data = locals()[f'{split}_batch']
+            predictions = generate_predictions(input_data, batch_data)
+            augment_emb[self.unimodal_modality_names[0] + f'_{split}'] = predictions
         return augment_encoder_dict, augment_emb
