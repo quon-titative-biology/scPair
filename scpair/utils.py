@@ -17,6 +17,10 @@ import torch.nn.functional as F
 import torch.distributions as D
 from torch.utils.data import TensorDataset
 from torch.utils.data import DataLoader, Dataset
+from sklearn.model_selection import train_test_split
+import anndata
+import scanpy as sc
+import scvi
 #from torch.utils.tensorboard import SummaryWriter
 #from prettytable import PrettyTable
 #def model_params_overview(model):
@@ -230,108 +234,169 @@ def collate_wrapper(batch, omic_combn):
     return batch, dataset
 
 
+# # merge the paired data
+# def merge_paired_data(paired_objects = [None, None], modality_names = ['Gene Expression','Peaks'], modality_distributions = ['zinb', 'ber']):
+#     assert len(paired_objects) == 2, 'paired_objects should be a list of 2 scanpy AnnData objects'
+#     assert len(modality_names) == 2, 'modality_name should be a list of 2 strings (e.g. ["Gene Expression", "Peaks"])'
+#     assert len(modality_distributions) == 2, 'modality_distributions should be a list of 2 strings (e.g. ["zinb", "ber"])'
+#     assert paired_objects[0].obs.index.equals(paired_objects[1].obs.index), 'paired_objects should have the same sample index'
+#     paired_obj_dict = dict(zip(modality_names, paired_objects))
+#     paired_dist_dict = dict(zip(modality_names, modality_distributions))
+#     for name in modality_names:
+#         paired_obj_dict[name].var['modality'] = name
+#         print('processing modality: {}'.format(name))
+#         paired_obj_dict[name].var['modality_distribution'] = paired_dist_dict[name]
+#         if paired_dist_dict[name] == 'ber':
+#             # check if the data is binary
+#             if paired_obj_dict[name].X.min() < 0 or paired_obj_dict[name].X.max() > 1:
+#                 print('Bernoulli distribution was set for', name, 'data,', 'but', name, 'data is not binary. Converting to binary...')
+#                 paired_obj_dict[name].X = (paired_obj_dict[name].X > 0).astype(int)
+#         elif paired_dist_dict[name] == 'zinb' or paired_dist_dict[name] == 'nb':
+#             if paired_obj_dict[name].X.min() < 0:
+#                 raise ValueError('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data has negative values.'.format(name, name))
+#             elif paired_obj_dict[name].X.dtype != 'int': # not integer
+#                 # warning
+#                 warnings.warn('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data is not integer.'.format(name, name))
+#         elif paired_dist_dict[name] == 'gau':
+#             if paired_obj_dict[name].X.min() > 0:
+#                 raise ValueError('Gaussian distribution was set for {} data, but {} data has non-negative values.'.format(name, name))
+#     adata_paired = anndata.concat([paired_obj_dict[modality_names[0]].T, paired_obj_dict[modality_names[1]].T], merge="same")
+#     # adata_paired = paired_obj_dict[modality_names[0]].T.concatenate(paired_obj_dict[modality_names[1]].T, batch_key=None, join='inner')
+#     adata_paired = adata_paired.T
+#     return adata_paired
 
 
-import anndata
-import scanpy as sc
-import scvi
+# # split the data
+# def training_split(scobj, fracs=[0.8, 0.1, 0.1], seed=0, batch_key=None, pre_split=None):
+#     if pre_split is not None:
+#         train_set, val_set, test_set = pre_split
+#         metadata_ = scobj.obs.copy()
+#         metadata_['scPair_split'] = 'TBD'
+#         metadata_.loc[train_set, 'scPair_split'] = 'train'
+#         metadata_.loc[val_set, 'scPair_split'] = 'val'
+#         metadata_.loc[test_set, 'scPair_split'] = 'test'
+#         if scobj.obs.index.equals(metadata_.index):
+#             scobj.obs = metadata_.copy()
+#         else:
+#             print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+#             return metadata_
+#     else:
+#         print('No pre-split data provided. Splitting data based on provided fractions...')
+#         assert np.isclose(np.sum(fracs), 1, atol=1e-9), 'train_frac + val_frac + test_frac should be approximately 1'
+#         assert len(fracs) == 3, 'fracs should be a list of 3 fractions [train_frac, val_frac, test_frac]'
+#         train_frac, val_frac, test_frac = fracs
+#         assert train_frac >= 0 and val_frac >= 0 and test_frac >= 0, 'train_frac, val_frac, and test_frac should be >= 0'
+#         np.random.seed(seed)
+#         if batch_key is None:
+#             train_set, non_train_set = train_test_split(scobj.obs.index, test_size=val_frac + test_frac, random_state=seed)
+#             if test_frac == 0:
+#                 val_set = non_train_set
+#                 test_set = []
+#             else:
+#                 val_set, test_set = train_test_split(non_train_set, test_size=test_frac/(val_frac + test_frac), random_state=seed)
+#             metadata_ = scobj.obs.copy()
+#             metadata_['scPair_split'] = 'TBD'
+#             metadata_.loc[train_set, 'scPair_split'] = 'train'
+#             metadata_.loc[val_set, 'scPair_split'] = 'val'
+#             metadata_.loc[test_set, 'scPair_split'] = 'test'
+#             if scobj.obs.index.equals(metadata_.index):
+#                 scobj.obs = metadata_.copy() 
+#             else:
+#                 print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+#                 return metadata_
+#         else:
+#             print('split the data based on', batch_key, 'column from the metadata')
+#             if isinstance(batch_key, list):
+#                 for bk in batch_key:
+#                     assert bk in scobj.obs.columns, 'batch_key {} should be in the metadata'.format(bk)
+#             elif isinstance(batch_key, str):
+#                 assert batch_key in scobj.obs.columns, 'batch_key should be in the metadata'
+#             else:
+#                 raise ValueError('batch_key should be a string or a list of strings')
+#             metadata_ = scobj.obs.copy()
+#             metadata_['cell_index'] = metadata_.index.tolist()
+#             train_set = metadata_.groupby(batch_key).apply(lambda x: x.sample(frac=train_frac, random_state=seed))['cell_index'].tolist()
+#             metadata_rest = metadata_.loc[~metadata_.index.isin(train_set)]
+#             val_set = metadata_rest.groupby(batch_key).apply(lambda x: x.sample(frac=val_frac/(val_frac + test_frac), random_state=seed))['cell_index'].tolist()
+#             test_set = metadata_rest.loc[~metadata_rest.index.isin(val_set)]['cell_index'].tolist()
+#             metadata_['scPair_split'] = 'TBD'
+#             metadata_.loc[train_set, 'scPair_split'] = 'train'
+#             metadata_.loc[val_set, 'scPair_split'] = 'val'
+#             metadata_.loc[test_set, 'scPair_split'] = 'test'
+#             if scobj.obs.index.equals(metadata_.index):
+#                 scobj.obs = metadata_.copy()
+#             else:
+#                 print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+#                 return metadata_
+#     return scobj.copy()
 
-# merge the paired data
+
+# optimized merge_paired_data and training_split functions
+def check_distribution(name, obj, dist):
+    if dist == 'ber':
+        if obj.X.min() < 0 or obj.X.max() > 1:
+            print(f'Bernoulli distribution was set for {name} data, but {name} data is not binary. Converting to binary...')
+            obj.X = (obj.X > 0).astype(int)
+    elif dist in ['zinb', 'nb']:
+        if obj.X.min() < 0:
+            raise ValueError(f'(Zero-Inflated) Negative Binomial distribution was set for {name} data, but {name} data has negative values.')
+        elif obj.X.dtype != 'int':
+            warnings.warn(f'(Zero-Inflated) Negative Binomial distribution was set for {name} data, but {name} data is not integer.')
+    elif dist == 'gau':
+        if obj.X.min() > 0:
+            raise ValueError(f'Gaussian distribution was set for {name} data, but {name} data has non-negative values.')
+
+
 def merge_paired_data(paired_objects = [None, None], modality_names = ['Gene Expression','Peaks'], modality_distributions = ['zinb', 'ber']):
-    assert len(paired_objects) == 2, 'paired_objects should be a list of 2 scanpy AnnData objects'
-    assert len(modality_names) == 2, 'modality_name should be a list of 2 strings (e.g. ["Gene Expression", "Peaks"])'
-    assert len(modality_distributions) == 2, 'modality_distributions should be a list of 2 strings (e.g. ["zinb", "ber"])'
-    assert paired_objects[0].obs.index.equals(paired_objects[1].obs.index), 'paired_objects should have the same sample index'
     paired_obj_dict = dict(zip(modality_names, paired_objects))
     paired_dist_dict = dict(zip(modality_names, modality_distributions))
-    for name in modality_names:
-        paired_obj_dict[name].var['modality'] = name
-        print('processing modality: {}'.format(name))
-        paired_obj_dict[name].var['modality_distribution'] = paired_dist_dict[name]
-        if paired_dist_dict[name] == 'ber':
-            # check if the data is binary
-            if paired_obj_dict[name].X.min() < 0 or paired_obj_dict[name].X.max() > 1:
-                print('Bernoulli distribution was set for', name, 'data,', 'but', name, 'data is not binary. Converting to binary...')
-                paired_obj_dict[name].X = (paired_obj_dict[name].X > 0).astype(int)
-        elif paired_dist_dict[name] == 'zinb' or paired_dist_dict[name] == 'nb':
-            if paired_obj_dict[name].X.min() < 0:
-                raise ValueError('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data has negative values.'.format(name, name))
-            elif paired_obj_dict[name].X.dtype != 'int': # not integer
-                # warning
-                warnings.warn('(Zero-Inflated) Negative Binomial distribution was set for {} data, but {} data is not integer.'.format(name, name))
-        elif paired_dist_dict[name] == 'gau':
-            if paired_obj_dict[name].X.min() > 0:
-                raise ValueError('Gaussian distribution was set for {} data, but {} data has non-negative values.'.format(name, name))
+    for name, obj in paired_obj_dict.items():
+        obj.var['modality'] = name
+        print(f'processing modality: {name}')
+        obj.var['modality_distribution'] = paired_dist_dict[name]
+        check_distribution(name, obj, paired_dist_dict[name])
     adata_paired = anndata.concat([paired_obj_dict[modality_names[0]].T, paired_obj_dict[modality_names[1]].T], merge="same")
-    # adata_paired = paired_obj_dict[modality_names[0]].T.concatenate(paired_obj_dict[modality_names[1]].T, batch_key=None, join='inner')
     adata_paired = adata_paired.T
     return adata_paired
 
 
-# split the data
+def split_data(scobj, train_frac, val_frac, test_frac, seed, batch_key=None):
+    if batch_key is None:
+        train_set, non_train_set = train_test_split(scobj.obs.index, test_size=val_frac + test_frac, random_state=seed)
+        if test_frac == 0:
+            val_set = non_train_set
+            test_set = []
+        else:
+            val_set, test_set = train_test_split(non_train_set, test_size=test_frac/(val_frac + test_frac), random_state=seed)
+    else:
+        metadata_ = scobj.obs.copy()
+        metadata_['cell_index'] = metadata_.index.tolist()
+        train_set = metadata_.groupby(batch_key).apply(lambda x: x.sample(frac=train_frac, random_state=seed))['cell_index'].tolist()
+        metadata_rest = metadata_.loc[~metadata_.index.isin(train_set)]
+        val_set = metadata_rest.groupby(batch_key).apply(lambda x: x.sample(frac=val_frac/(val_frac + test_frac), random_state=seed))['cell_index'].tolist()
+        test_set = metadata_rest.loc[~metadata_rest.index.isin(val_set)]['cell_index'].tolist()
+    return train_set, val_set, test_set
+
+
 def training_split(scobj, fracs=[0.8, 0.1, 0.1], seed=0, batch_key=None, pre_split=None):
+    assert np.isclose(np.sum(fracs), 1, atol=1e-9), 'train_frac + val_frac + test_frac should be approximately 1'
+    assert len(fracs) == 3, 'fracs should be a list of 3 fractions [train_frac, val_frac, test_frac]'
+    train_frac, val_frac, test_frac = fracs
+    assert train_frac >= 0 and val_frac >= 0 and test_frac >= 0, 'train_frac, val_frac, and test_frac should be >= 0'
+    np.random.seed(seed)
     if pre_split is not None:
         train_set, val_set, test_set = pre_split
-        metadata_ = scobj.obs.copy()
-        metadata_['scPair_split'] = 'TBD'
-        metadata_.loc[train_set, 'scPair_split'] = 'train'
-        metadata_.loc[val_set, 'scPair_split'] = 'val'
-        metadata_.loc[test_set, 'scPair_split'] = 'test'
-        if scobj.obs.index.equals(metadata_.index):
-            scobj.obs = metadata_.copy()
-        else:
-            print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
-            return metadata_
     else:
         print('No pre-split data provided. Splitting data based on provided fractions...')
-        assert np.isclose(np.sum(fracs), 1, atol=1e-9), 'train_frac + val_frac + test_frac should be approximately 1'
-        assert len(fracs) == 3, 'fracs should be a list of 3 fractions [train_frac, val_frac, test_frac]'
-        train_frac, val_frac, test_frac = fracs
-        assert train_frac >= 0 and val_frac >= 0 and test_frac >= 0, 'train_frac, val_frac, and test_frac should be >= 0'
-        np.random.seed(seed)
-        from sklearn.model_selection import train_test_split
-        if batch_key is None:
-            train_set, non_train_set = train_test_split(scobj.obs.index, test_size=val_frac + test_frac, random_state=seed)
-            if test_frac == 0:
-                val_set = non_train_set
-                test_set = []
-            else:
-                val_set, test_set = train_test_split(non_train_set, test_size=test_frac/(val_frac + test_frac), random_state=seed)
-            metadata_ = scobj.obs.copy()
-            metadata_['scPair_split'] = 'TBD'
-            metadata_.loc[train_set, 'scPair_split'] = 'train'
-            metadata_.loc[val_set, 'scPair_split'] = 'val'
-            metadata_.loc[test_set, 'scPair_split'] = 'test'
-            if scobj.obs.index.equals(metadata_.index):
-                scobj.obs = metadata_.copy() 
-            else:
-                print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
-                return metadata_
-        else:
-            print('split the data based on', batch_key, 'column from the metadata')
-            if isinstance(batch_key, list):
-                for bk in batch_key:
-                    assert bk in scobj.obs.columns, 'batch_key {} should be in the metadata'.format(bk)
-            elif isinstance(batch_key, str):
-                assert batch_key in scobj.obs.columns, 'batch_key should be in the metadata'
-            else:
-                raise ValueError('batch_key should be a string or a list of strings')
-            metadata_ = scobj.obs.copy()
-            metadata_['cell_index'] = metadata_.index.tolist()
-            train_set = metadata_.groupby(batch_key).apply(lambda x: x.sample(frac=train_frac, random_state=seed))['cell_index'].tolist()
-            metadata_rest = metadata_.loc[~metadata_.index.isin(train_set)]
-            val_set = metadata_rest.groupby(batch_key).apply(lambda x: x.sample(frac=val_frac/(val_frac + test_frac), random_state=seed))['cell_index'].tolist()
-            test_set = metadata_rest.loc[~metadata_rest.index.isin(val_set)]['cell_index'].tolist()
-            metadata_['scPair_split'] = 'TBD'
-            metadata_.loc[train_set, 'scPair_split'] = 'train'
-            metadata_.loc[val_set, 'scPair_split'] = 'val'
-            metadata_.loc[test_set, 'scPair_split'] = 'test'
-            if scobj.obs.index.equals(metadata_.index):
-                scobj.obs = metadata_.copy()
-            else:
-                print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
-                return metadata_
+        train_set, val_set, test_set = split_data(scobj, train_frac, val_frac, test_frac, seed, batch_key)
+    metadata_ = scobj.obs.copy()
+    metadata_['scPair_split'] = 'TBD'
+    metadata_.loc[train_set, 'scPair_split'] = 'train'
+    metadata_.loc[val_set, 'scPair_split'] = 'val'
+    metadata_.loc[test_set, 'scPair_split'] = 'test'
+    if scobj.obs.index.equals(metadata_.index):
+        scobj.obs = metadata_.copy()
+    else:
+        print('The provided metadata does not match the input AnnData object. Returning the metadata only...')
+        return metadata_
     return scobj.copy()
-
-
-
