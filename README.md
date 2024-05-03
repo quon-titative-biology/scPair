@@ -11,19 +11,13 @@ Please clone this repository:
 git clone https://github.com/quon-titative-biology/scPair
 cd scPair
 ```
+PyPI installation will be released soon.
+
 ---
 ### Package requirements
 scPair is implemented using `PyTorch 2.0.1`, `anndata 0.10.6`, and `scanpy 1.10.0`  under `Python 3.10.14`. 
 
-
-```command line
-conda create -y --name scpair -c conda-forge -c bioconda python=3.10
-conda activate scpair
-pip install torch==2.0.1 torchvision==0.15.2 torchaudio==2.0.2 --index-url https://download.pytorch.org/whl/cu118
-...
-```
-
-Or alternatively, you can choose to use the [environment file](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml) provided under this repository:
+Users can choose to create the environment provided under this repository [(env file)](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml):
 ```command line
 conda env create --file=scpair.yml
 ```
@@ -31,7 +25,7 @@ conda env create --file=scpair.yml
 ---
 ### [Tutorials](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md)
 
-* This repository is being updated periodically. For questions, please email hrhu@ucdavis.edu
+* This repository is being updated periodically. For questions, please email hrhu@ucdavis.edu or create new issues under this repository.
 
 ---
 ### Updates
