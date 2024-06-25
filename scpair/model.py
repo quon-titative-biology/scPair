@@ -372,11 +372,39 @@ class scPair_object():
     def data_loader_builder(self):
         data = self.scobj.copy()
         cov = self.cov
-        # Convert categorical covariates to dummy variables
-        cov_dummy = pd.get_dummies(data.obs[cov]).astype(int) if cov is not None else None
-        if cov_dummy is not None:
-            data.obs = pd.concat([data.obs, cov_dummy], axis=1)
-        self.cov_dummy = cov_dummy
+        # Check the type of each covariate and process accordingly
+        discrete_cov = []
+        continuous_cov = []
+        if cov is not None:
+            for c in cov:
+                if data.obs[c].dtype.name == 'category' or data.obs[c].dtype.name == 'object':
+                    # Convert categorical covariates to dummy variables
+                    cov_discrete = pd.get_dummies(data.obs[c]).astype(int)
+                    discrete_cov.append(cov_discrete)
+                else:
+                    # Normalize continuous covariates
+                    cov_continuous = (data.obs[c] -  data.obs[c].mean())/ data.obs[c].std()
+                    continuous_cov.append(cov_continuous)
+        self.cov_discrete = pd.concat(discrete_cov, axis=1) if len(discrete_cov) > 0 else None
+        self.cov_continuous = pd.concat(continuous_cov, axis=1) if len(continuous_cov) > 0 else None
+        if self.cov_discrete is None and self.cov_continuous is None:
+            self.cov_dummy = None
+        elif self.cov_discrete is not None and self.cov_continuous is not None:
+            self.cov_dummy = pd.concat((self.cov_discrete, self.cov_continuous), axis=1)
+        elif self.cov_discrete is not None and self.cov_continuous is None:
+            self.cov_dummy = self.cov_discrete
+        elif self.cov_discrete is None and self.cov_continuous is not None:
+            self.cov_dummy = self.cov_continuous
+        if self.cov_dummy is not None:
+            data.obs = data.obs = pd.concat([data.obs['scPair_split'], self.cov_dummy], axis=1) # pd.concat([data.obs, self.cov_dummy], axis=1)
+    # def data_loader_builder(self):
+    #         data = self.scobj.copy()
+    #         cov = self.cov
+    #         # Convert categorical covariates to dummy variables
+    #         cov_dummy = pd.get_dummies(data.obs[cov]).astype(int) if cov is not None else None
+    #         if cov_dummy is not None:
+    #             data.obs = pd.concat([data.obs, cov_dummy], axis=1)
+    #         self.cov_dummy = cov_dummy
         # Split data into train, validation, and test sets
         split_data = {split: data[data.obs['scPair_split'] == split] for split in ['train', 'val', 'test']}
         self.train_metadata = split_data['train'].obs.copy()
@@ -394,7 +422,7 @@ class scPair_object():
             for split in ['train', 'val', 'test']:
                 if split in split_data:
                     data_loader_dict[f'{modality}_{split}_mtx'] = torch.FloatTensor(split_data[split][:, data.var['modality'] == modality].X)
-                    data_loader_dict[f'{modality}_{split}_cov'] = torch.FloatTensor(cov_dummy.loc[split_data[split].obs.index].values) if cov is not None else None
+                    data_loader_dict[f'{modality}_{split}_cov'] = torch.FloatTensor(self.cov_dummy.loc[split_data[split].obs.index].values) if cov is not None else None
                     if modality in ['Gene Expression', 'Peaks']:
                         data_loader_dict[f'{modality}_{split}_lib'] = data_loader_dict[f'{modality}_{split}_mtx'].sum(1).reshape(-1,1)
         # Store data loader keys and split data loaders by train, validation, and test sets
@@ -481,7 +509,7 @@ class scPair_object():
     def get_scheduler(self, optimizer):
         """Create a learning rate scheduler."""
         if self.weight_decay == 'ExponentialLR':
-            return torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1)
+            return torch.optim.lr_scheduler.ExponentialLR(optimizer=optimizer, gamma=0.99, last_epoch=-1, threshold=0.00001)
         elif self.weight_decay == 'StepLR':
             return torch.optim.lr_scheduler.StepLR(optimizer=optimizer, step_size=25, gamma=0.1, last_epoch=-1)
         elif self.weight_decay == 'ReduceLROnPlateau':
