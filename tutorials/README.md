@@ -52,7 +52,7 @@ adata_paired.obs.scPair_split.value_counts()
 # val       674
 ```
 
-You can also try the preprocessed multimodal AnnData object we have prepared: [https://figshare.com/s/ea98335f6f8a0abc8ae5]
+You can also try the preprocessed multimodal AnnData object we have prepared: [figshare link](https://figshare.com/s/ea98335f6f8a0abc8ae5), DOI: 10.6084/m9.figshare.26143948
 
 ```python
 import os
