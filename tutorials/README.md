@@ -71,7 +71,7 @@ from scpair import *
 """
 load multimodal data
 """
-adata_paired = sc.read_h5ad(data_path + "./sciCAR/paired_full_features.h5ad")
+adata_paired = sc.read_h5ad(data_path + "./data/sciCAR/paired_full_features.h5ad")
 
 """
 set up scPair object
