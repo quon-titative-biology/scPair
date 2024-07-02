@@ -1,15 +1,23 @@
 ## Tutorials
 ### Basic example for running scPair
+
+
+Let's assume you already have the (raw count) RNA cellxgene and the paired (binarized) ATAC cellxpeak matrices in hand
 ```python
-# import necessary packages for single cell analysis and visualization
-# such as: scipy, scanpy, sklearn, numpy, pandas, umap, matplotlib, seaborn, etc
+# import necessary packages for single cell analysis
+import os
+import copy
+import scipy
+import random
+import numpy as np
+import pandas as pd
+from scipy import sparse
+
 import anndata
 import scanpy as sc
+import scvi
 from scpair import *
 
-# assuming you already have the (raw count) RNA cellxgene and the paired (binarized) ATAC cellxpeak matrices in hand
-# as well as split sets (train, validation, and held-out test sets)
-####################################################################
 """
 build modality-specific scanpy object
 """
@@ -22,7 +30,7 @@ make paired multi-modal object
 adata_paired = merge_paired_data([rna_adata, atac_adata])
 
 """
-predefined split
+if you have predefined split
 """
 train_id = pd.read_table(index_path + "train_id.txt",  header=None)
 val_id = pd.read_table(index_path + "val_id.txt",  header=None)
@@ -37,23 +45,54 @@ perform the split operation for the multi-modal object
 """
 adata_paired = training_split(adata_paired, pre_split=[train_id, val_id, test_id])
 adata_paired.obs.scPair_split.value_counts()
+# this is an example using sciCAR cell line dataset
 # scPair_split
 # train    2700
 # test      842
 # val       674
+```
+
+You can also try the preprocessed multimodal AnnData object we have prepared:
+
+```python
+import os
+import copy
+import scipy
+import random
+import numpy as np
+import pandas as pd
+from scipy import sparse
+
+import anndata
+import scanpy as sc
+import scvi
+from scpair import *
+
+"""
+load multimodal data
+"""
+adata_paired = sc.read_h5ad(data_path + "./sciCAR/paired_full_features.h5ad")
 
 """
 set up scPair object
 """
-scpair_setup = scPair_object(scobj = adata_paired, cov=['batch'], modalities = {'Gene Expression': 'zinb', 'Peaks': 'ber'},
+scpair_setup = scPair_object(scobj = adata_paired, cov=None, modalities = {'Gene Expression': 'zinb', 'Peaks': 'ber'},
                          sample_factor_rna=True, sample_factor_atac=False, infer_library_size_rna=False, infer_library_size_atac=True,
                          batchnorm=True, layernorm=True, SEED=0, hidden_layer=[800, 30], dropout_rate=0.1, learning_rate_prediction=1e-3, max_epochs=1000)
+```
 
+In this specific case, we do not need to provide covariates. But if in your own data, you want to correct the batch effect or other covariates, please set the `cov` argument to  `cov=['batch']`, or `cov=['batch0', 'batch1']` if you have more than one covariates to be corrected. 
+
+Please make sure the names of covariates exist in the column names of your metadata `adata_paired.obs`.
+
+Additionally, please ensure that the type of categorical covariates is set properly using `.astype('category')` so that scPair will automatically generate one-hot encoded covariates. Otherwise, scPair will consider them as continuous data if they are numeric.
+
+
+```python
 """
 start running optimization for scPair framework
 """
 res = scpair_setup.run()
-
 
 """
 extrct the learned embeddings
@@ -69,6 +108,13 @@ extrct the cross-modality predictions
 predictions = scpair_setup.predict()
 predictions.keys() # dict_keys(['Peaks_train', 'Peaks_val', 'Peaks_test', 'Gene Expression_train', 'Gene Expression_val', 'Gene Expression_test'])
 
+```
+
+This step below is optional. 
+
+If you have an extra unimodal data object from either modality, make sure for the specific modality, you have the same set of features with the same order.
+
+```python
 
 """
 optional: adding unimodal data
