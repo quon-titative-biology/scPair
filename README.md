@@ -21,6 +21,7 @@ Users can choose to create the environment provided under this repository [(env 
 ```command line
 conda env create --file=scpair.yml
 ```
+we have tested it on Azure
 
 ---
 ### [Tutorials](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md)
