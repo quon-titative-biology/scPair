@@ -6,26 +6,26 @@ channels:
 dependencies:
   - _libgcc_mutex=0.1=conda_forge
   - _openmp_mutex=4.5=2_gnu
-  - bzip2=1.0.8=hd590300_5
-  - ca-certificates=2024.2.2=hbcca054_0
-  - ld_impl_linux-64=2.40=h41732ed_0
-  - libffi=3.4.2=h7f98852_5
-  - libgcc-ng=13.2.0=h807b86a_5
-  - libgomp=13.2.0=h807b86a_5
-  - libnsl=2.0.1=hd590300_0
-  - libsqlite=3.45.2=h2797004_0
-  - libuuid=2.38.1=h0b41bf4_0
-  - libxcrypt=4.4.36=hd590300_1
-  - libzlib=1.2.13=hd590300_5
-  - ncurses=6.4.20240210=h59595ed_0
-  - openssl=3.2.1=hd590300_1
-  - pip=24.0=pyhd8ed1ab_0
-  - python=3.10.14=hd12c33a_0_cpython
-  - readline=8.2=h8228510_1
-  - setuptools=69.2.0=pyhd8ed1ab_0
-  - tk=8.6.13=noxft_h4845f30_101
-  - wheel=0.43.0=pyhd8ed1ab_1
-  - xz=5.2.6=h166bdaf_0
+  - bzip2=1.0.8
+  - ca-certificates=2024.2.2
+  - ld_impl_linux-64=2.40
+  - libffi=3.4.2
+  - libgcc-ng=13.2.0
+  - libgomp=13.2.0
+  - libnsl=2.0.1
+  - libsqlite=3.45.2
+  - libuuid=2.38.1
+  - libxcrypt=4.4.36
+  - libzlib=1.2.13
+  - ncurses=6.4.20240210
+  - openssl=3.2.1
+  - pip=24.0
+  - python=3.10.14
+  - readline=8.2
+  - setuptools=69.2.0
+  - tk=8.6.13
+  - wheel=0.43.0
+  - xz=5.2.6
   - pip:
       - absl-py==2.1.0
       - aiohttp==3.9.3
