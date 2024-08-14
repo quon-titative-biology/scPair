@@ -48,9 +48,10 @@ If it is helpful in your research, please consider citing it:
 @software{scPair,
   author = {Hu, Hongru and Quon, Gerald},
   title = {Boosting single cell multimodal analysis by leveraging single cell atlases and implicit feature selection},
+  DOI = {}
   url = {https://github.com/quon-titative-biology/scPair/},
   version = {1.0.0},
-  month = {3},
-  year = {2023}
+  month = {9},
+  year = {2024}
 }
 ```
