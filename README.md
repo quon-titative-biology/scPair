@@ -32,6 +32,8 @@ we have tested it on Azure
 
 ---
 ### Updates
+Paper published in Nature Communications (Nov 15, 2024)
+
 Data access (July 1, 2024)
 
 Tutorial updates (July 1, 2024; Mar 6, 2024; Apr 25, 2024)
@@ -43,6 +45,7 @@ Repo created (Aug 28, 2023)
 ---
 
 If it is helpful in your research, please consider citing it:
+https://www.nature.com/articles/s41467-024-53971-2
 
 ```
 @software{scPair,
