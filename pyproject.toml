@@ -1,26 +1,32 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "scpair"
 version = "0.1.0"
 description = "scPair: boosting single cell multimodal analysis by leveraging implicit feature selection and single cell atlases"
 readme = "README.md"
-license = {file = "LICENSE"}
+license = {text = "MIT"}
 authors = [
     {name = "Hongru Hu", email = "hrhu@ucdavis.edu"},
     {name = "Gerald Quon"}
 ]
+keywords = [
+    "single-cell", "multimodal", "scRNA-seq", "ATAC-seq", "deep-learning", 
+    "bioinformatics", "genomics", "machine-learning", "neural-networks"
+]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
 ]
-requires-python = ">=3.10,<3.12"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "absl-py==2.1.0",
     "aiohttp==3.9.3",
@@ -107,6 +113,7 @@ dependencies = [
     "threadpoolctl==3.4.0",
     "toolz==0.12.1",
     "tqdm==4.66.2",
+    "torch>=2.0.0",
     "triton>=2.0.0,<3.0.0",
     "typing-extensions==4.8.0",
     "tzdata==2024.1",
@@ -130,8 +137,9 @@ Repository = "https://github.com/quon-titative-biology/scPair"
 Documentation = "https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md"
 "Bug Tracker" = "https://github.com/quon-titative-biology/scPair/issues"
 
-[tool.hatch.build.targets.wheel]
-packages = ["scpair"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["scpair*"]
 
 [tool.uv]
 dev-dependencies = []
