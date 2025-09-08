@@ -8,6 +8,7 @@ from .loss import *
 import os
 import copy
 import random
+import gc
 import numpy as np
 import pandas as pd
 import scipy
@@ -15,8 +16,43 @@ import torch
 from torch import nn, optim
 import torch.nn.functional as F
 import torch.distributions as D
-from torch.utils.data import TensorDataset
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import TensorDataset, Dataset
+from torch.utils.data import DataLoader
+from torch.cuda.amp import autocast, GradScaler
+from torch.utils.checkpoint import checkpoint
+
+
+# Memory-efficient dataset class for lazy GPU loading
+class LazyGPUDataset(Dataset):
+    """Memory-efficient dataset that loads data to GPU only when needed."""
+    def __init__(self, *tensors, device='cuda'):
+        self.tensors = tensors
+        self.device = device
+        self.length = len(tensors[0]) if tensors else 0
+        
+    def __len__(self):
+        return self.length
+        
+    def __getitem__(self, idx):
+        # Only move the specific batch to GPU when accessed
+        return tuple(tensor[idx] for tensor in self.tensors)
+
+
+# Memory management utilities
+def clear_gpu_memory():
+    """Clear GPU memory and run garbage collection."""
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+
+
+def move_to_device_safe(tensor, device):
+    """Safely move tensor to device with memory management."""
+    if tensor is None:
+        return None
+    if tensor.device == device:
+        return tensor
+    return tensor.to(device, non_blocking=True)
 
 
 # modules of the multiview end-to-end predictive model
@@ -56,6 +92,37 @@ class Input_Module(nn.Module):
                                             nn.Linear(hidden_layer[-1], 1, bias=True))
            # self.hidden_lib = nn.Linear(input_dim+input_batch_num, 1, bias=True)
     def forward(self, input, input_batch):
+        # Use gradient checkpointing for memory efficiency only during training
+        if self.training and input.requires_grad:
+            return self._forward_checkpointed(input, input_batch)
+        else:
+            return self._forward_normal(input, input_batch)
+    
+    def _forward_checkpointed(self, input, input_batch):
+        """Forward pass with gradient checkpointing for memory efficiency."""
+        def checkpointed_forward(input, input_batch):
+            if input_batch is not None:
+                latent_rep = self.hidden_rep(torch.cat([input, input_batch], dim=1))
+            else:
+                latent_rep = self.hidden_rep(input)
+            if self.add_linear_layer is True:
+                latent_rep = self.extra_linear_rep(latent_rep)
+            return latent_rep
+        
+        latent_rep = checkpoint(checkpointed_forward, input, input_batch)
+        
+        # infer the library size factor
+        if self.infer_library_size == True:
+           if input_batch is not None:
+              latent_lib = self.hidden_lib(torch.cat([input, input_batch], dim=1))
+           else:
+              latent_lib = self.hidden_lib(input)
+        else:
+           latent_lib = None
+        return latent_rep, latent_lib
+    
+    def _forward_normal(self, input, input_batch):
+        """Normal forward pass without checkpointing."""
         # infer the latent representation/ meta-feature
         if input_batch is not None:
            latent_rep = self.hidden_rep(torch.cat([input, input_batch], dim=1))
@@ -310,7 +377,11 @@ class scPair_object():
                  mapping_layernorm = False,
                  mapping_batchnorm = False,
                  mapping_activation = nn.LeakyReLU(),
-                 mapping_dropout_rate = 0):
+                 mapping_dropout_rate = 0,
+                 use_mixed_precision = False,
+                 gradient_checkpointing = True,
+                 pin_memory = True,
+                 memory_efficient_loading = True):
         """
         scPair framework and optimization
         Input: each modality's cell x feature matrix, one-hoe encoded covariates
@@ -357,6 +428,13 @@ class scPair_object():
         self.mapping_batchnorm = mapping_batchnorm
         self.mapping_activation = mapping_activation
         self.mapping_dropout_rate = mapping_dropout_rate
+        self.use_mixed_precision = use_mixed_precision
+        self.gradient_checkpointing = gradient_checkpointing
+        self.pin_memory = pin_memory
+        self.memory_efficient_loading = memory_efficient_loading
+        
+        # Initialize mixed precision scaler if needed
+        self.scaler = GradScaler() if self.use_mixed_precision and torch.cuda.is_available() else None
         if self.add_linear_layer is True and self.mapping_non_neg is True:
             raise ValueError('add_linear_layer and mapping_non_neg cannot be both True')
         if self.mapping_non_neg is True:
@@ -414,14 +492,19 @@ class scPair_object():
         if scipy.sparse.issparse(data.X):
             print('Converting sparse matrix to dense matrix...')
             data.X = data.X.toarray()
-        # Initialize data loaders
+        # Initialize data loaders with memory optimization
         print('Initializing data loaders...')
         data_loader_dict = {}
         for modality in self.modality_names:
             print('processing modality:', modality)
             for split in ['train', 'val', 'test']:
                 if split in split_data:
-                    data_loader_dict[f'{modality}_{split}_mtx'] = torch.FloatTensor(split_data[split][:, data.var['modality'] == modality].X)
+                    # Keep data on CPU initially for memory efficiency
+                    modality_data = split_data[split][:, data.var['modality'] == modality].X
+                    if scipy.sparse.issparse(modality_data):
+                        modality_data = modality_data.toarray()
+                    
+                    data_loader_dict[f'{modality}_{split}_mtx'] = torch.FloatTensor(modality_data)
                     data_loader_dict[f'{modality}_{split}_cov'] = torch.FloatTensor(self.cov_dummy.loc[split_data[split].obs.index].values) if cov is not None else None
                     if modality in ['Gene Expression', 'Peaks']:
                         data_loader_dict[f'{modality}_{split}_lib'] = data_loader_dict[f'{modality}_{split}_mtx'].sum(1).reshape(-1,1)
@@ -617,11 +700,21 @@ class scPair_object():
                                         {'params': nodecay_param_encoder, 'weight_decay': 0, 'lr': self.learning_rate_prediction}, 
                                         {'params': nodecay_param_decoder, 'weight_decay': 0, 'lr': self.learning_rate_prediction}])
             scheduler = self.get_scheduler(optimizer)
-            # Prepare training data
-            train_data = TensorDataset(trainData.to(self.device), *(trainBatch.to(self.device),) if self.cov is not None else (), *(trainLib.to(self.device),) if trainLib is not None else (), trainLabel.to(self.device))
+            # Prepare training data with memory optimization
+            if self.memory_efficient_loading:
+                # Use lazy loading to avoid moving all data to GPU at once
+                train_data = LazyGPUDataset(trainData, *(trainBatch,) if self.cov is not None else (), *(trainLib,) if trainLib is not None else (), trainLabel, device=self.device)
+            else:
+                # Traditional approach - move all data to GPU
+                train_data = TensorDataset(trainData.to(self.device), *(trainBatch.to(self.device),) if self.cov is not None else (), *(trainLib.to(self.device),) if trainLib is not None else (), trainLabel.to(self.device))
+            
             from torch.utils.data import DataLoader, Dataset
             set_seed(self.SEED)
-            DataLoader_train = DataLoader(train_data, batch_size=self.batch_size, shuffle=True)
+            DataLoader_train = DataLoader(train_data, 
+                                        batch_size=self.batch_size, 
+                                        shuffle=True,
+                                        pin_memory=self.pin_memory and not self.memory_efficient_loading,
+                                        num_workers=0)  # Set to 0 to avoid multiprocessing issues
             # Set up early stopping if enabled
             early_stopping_patience, epochs_no_improve, early_stop, min_val_loss = (self.early_stopping_patience, 0, False, np.inf) if self.early_stopping_activation else (None, None, None, None)
             print('Enabling early stopping with patience of', early_stopping_patience) if self.early_stopping_activation else None
@@ -634,25 +727,58 @@ class scPair_object():
             for epoch in pbar:
                 training_mode(encoder, decoder)
                 for idx, data in enumerate(DataLoader_train):
+                    # Move data to device safely
+                    if self.memory_efficient_loading:
+                        data = tuple(move_to_device_safe(tensor, self.device) for tensor in data)
+                    
                     if trainLib is not None:
                         if self.cov is not None:
                             x, b, lib, y = data
-                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
+                            if self.use_mixed_precision and self.scaler is not None:
+                                with autocast():
+                                    train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b, scaler=self.scaler)
+                            else:
+                                train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
                         else:
                             x, lib, y = data
-                            train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
+                            if self.use_mixed_precision and self.scaler is not None:
+                                with autocast():
+                                    train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False, scaler=self.scaler)
+                            else:
+                                train_net(x, y, lib, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
                     else:
                         if self.cov is not None:
                             x, b, y = data
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
+                            if self.use_mixed_precision and self.scaler is not None:
+                                with autocast():
+                                    train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b, scaler=self.scaler)
+                            else:
+                                train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=True, input_batch=b, output_batch=b)
                         else:
                             x, y = data
-                            train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
+                            if self.use_mixed_precision and self.scaler is not None:
+                                with autocast():
+                                    train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False, scaler=self.scaler)
+                            else:
+                                train_net(x, y, None, encoder, decoder, optimizer, likelihood_type=self.modalities[output_modality], add_cov=False)
+                    
+                    # Clear memory periodically
+                    if idx % 10 == 0:
+                        clear_gpu_memory()
                 # Evaluate the model
                 evaluating_mode(encoder, decoder)
                 with torch.no_grad():
-                    val_total_loss = eval_net(valData, valLabel, valLib if valLib is not None else None, encoder, decoder, likelihood_type=self.modalities[output_modality], add_cov=self.cov is not None, input_batch=valBatch, output_batch=valBatch)
+                    # Move validation data to device safely
+                    valData_safe = move_to_device_safe(valData, self.device)
+                    valLabel_safe = move_to_device_safe(valLabel, self.device)
+                    valLib_safe = move_to_device_safe(valLib, self.device) if valLib is not None else None
+                    valBatch_safe = move_to_device_safe(valBatch, self.device) if valBatch is not None else None
+                    
+                    val_total_loss = eval_net(valData_safe, valLabel_safe, valLib_safe, encoder, decoder, likelihood_type=self.modalities[output_modality], add_cov=self.cov is not None, input_batch=valBatch_safe, output_batch=valBatch_safe)
                     pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
+                    
+                    # Clear validation tensors from memory
+                    del valData_safe, valLabel_safe, valLib_safe, valBatch_safe
                 # Update the scheduler
                 if optimizer.param_groups[0]['lr'] > 1e-7 and self.weight_decay in ['ExponentialLR', 'StepLR', 'ReduceLROnPlateau']:
                     scheduler.step()
@@ -679,6 +805,10 @@ class scPair_object():
                     self.save_path = os.getcwd()
                 torch.save(encoder_dict[input_modality + ' to ' + output_modality], self.save_path + '/encoder_' + input_modality + '_to_' + output_modality + '.pt')
                 torch.save(decoder_dict[input_modality + ' to ' + output_modality], self.save_path + '/decoder_' + input_modality + '_to_' + output_modality + '.pt')
+            
+            # Clear memory after training each modality
+            clear_gpu_memory()
+            print(f"Completed training for {input_modality} to {output_modality}")
         return encoder_dict, decoder_dict
     def train_bidirectional_mapping(self):
         embedding_dim = self.hidden_layer[-1]
@@ -686,15 +816,24 @@ class scPair_object():
         for input_modality in self.modality_names:
             output_modality = [mn for mn in self.modality_names if mn != input_modality][0]
             print('mapping direction:', input_modality, 'to', output_modality)
-            # Prepare training data
+            # Prepare training data with memory optimization
             input_embedding_train = self.embeddings[input_modality + '_train']
             output_embedding_train = self.embeddings[output_modality + '_train']
             input_embedding_val = self.embeddings[input_modality + '_val']
             output_embedding_val = self.embeddings[output_modality + '_val']
-            trainData = TensorDataset(input_embedding_train.to(self.device), output_embedding_train.to(self.device))
+            
+            if self.memory_efficient_loading:
+                trainData = LazyGPUDataset(input_embedding_train, output_embedding_train, device=self.device)
+            else:
+                trainData = TensorDataset(input_embedding_train.to(self.device), output_embedding_train.to(self.device))
+            
             from torch.utils.data import DataLoader, Dataset
             set_seed(self.SEED)
-            DataLoader_train = DataLoader(trainData, batch_size=self.batch_size, shuffle=True)
+            DataLoader_train = DataLoader(trainData, 
+                                        batch_size=self.batch_size, 
+                                        shuffle=True,
+                                        pin_memory=self.pin_memory and not self.memory_efficient_loading,
+                                        num_workers=0)
             # Initialize mapping network
             mapping_network = self.mapping_module(origin_module_dim = embedding_dim,
                                                 target_module_dim = embedding_dim,
@@ -723,16 +862,40 @@ class scPair_object():
             for epoch in pbar:
                 mapping_network.train();
                 for idx, (x, y) in enumerate(DataLoader_train):
-                    pred_emb = mapping_network(x)
-                    training_loss = scaled_loss(y, pred_emb)
-                    optimizer.zero_grad()
-                    training_loss.backward()
-                    optimizer.step()  
+                    # Move data to device safely
+                    if self.memory_efficient_loading:
+                        x = move_to_device_safe(x, self.device)
+                        y = move_to_device_safe(y, self.device)
+                    
+                    if self.use_mixed_precision and self.scaler is not None:
+                        with autocast():
+                            pred_emb = mapping_network(x)
+                            training_loss = scaled_loss(y, pred_emb)
+                        optimizer.zero_grad()
+                        self.scaler.scale(training_loss).backward()
+                        self.scaler.step(optimizer)
+                        self.scaler.update()
+                    else:
+                        pred_emb = mapping_network(x)
+                        training_loss = scaled_loss(y, pred_emb)
+                        optimizer.zero_grad()
+                        training_loss.backward()
+                        optimizer.step()
+                    
+                    # Clear memory periodically
+                    if idx % 10 == 0:
+                        clear_gpu_memory()
+                        
                 mapping_network.eval();
                 with torch.no_grad():
-                    val_pred_emb = mapping_network(input_embedding_val.to(self.device))
-                    val_total_loss = scaled_loss(output_embedding_val.to(self.device), val_pred_emb)
+                    val_x = move_to_device_safe(input_embedding_val, self.device)
+                    val_y = move_to_device_safe(output_embedding_val, self.device)
+                    val_pred_emb = mapping_network(val_x)
+                    val_total_loss = scaled_loss(val_y, val_pred_emb)
                     pbar.set_postfix({"Epoch": epoch+1, "validation Loss": val_total_loss.item()})
+                    
+                    # Clear validation tensors
+                    del val_x, val_y
                 if optimizer.param_groups[0]['lr'] > 1e-7 and self.weight_decay in ['ExponentialLR', 'StepLR', 'ReduceLROnPlateau']:
                     scheduler.step()
                 if val_total_loss.item() < min_val_loss:
@@ -754,6 +917,10 @@ class scPair_object():
                 if self.save_path is None:
                     self.save_path = os.getcwd()
                 torch.save(mapping_dict[input_modality + '_to_' + output_modality], self.save_path + '/mapping_' + input_modality + '_to_' + output_modality + '.pt')
+            
+            # Clear memory after training each mapping
+            clear_gpu_memory()
+            print(f"Completed mapping training for {input_modality} to {output_modality}")
         return mapping_dict
     def augment(self, unimodal_scobj, unimodal_modalities, unimodal_cov = None):
         # Set up unimodal data

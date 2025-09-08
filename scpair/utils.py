@@ -115,7 +115,7 @@ def evaluating_mode(model1, model2=None):
 
 
 #%%
-def train_net(input, output, library_size, encoder, decoder, optimizer, likelihood_type="zinb", add_cov=False, input_batch=None, output_batch=None):
+def train_net(input, output, library_size, encoder, decoder, optimizer, likelihood_type="zinb", add_cov=False, input_batch=None, output_batch=None, scaler=None):
     if   add_cov == True:
          latent_rep, latent_lib = encoder(input, input_batch)
          if library_size is not None:
@@ -138,8 +138,14 @@ def train_net(input, output, library_size, encoder, decoder, optimizer, likeliho
     else:
          print("ERROR")
     optimizer.zero_grad()
-    training_loss.backward()
-    optimizer.step()
+    
+    if scaler is not None:
+        scaler.scale(training_loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        training_loss.backward()
+        optimizer.step()
 
 
 #%%
