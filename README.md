@@ -8,22 +8,35 @@ scPair, a deep learning framework for computational analysis of single cell mult
 
 ---
 ### Package installation
-Please clone this repository:
-```command line
+
+#### Option 1: Using uv (Recommended)
+First, install [uv](https://docs.astral.sh/uv/getting-started/installation/) if you haven't already:
+
+Then clone this repository and set up the environment:
+```bash
 git clone https://github.com/quon-titative-biology/scPair
 cd scPair
+uv sync
 ```
+
+To activate the virtual environment:
+```bash
+source .venv/bin/activate
+```
+
+#### Option 2: Using conda
+Users can choose to create the environment provided under this repository [(env file)](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml):
+```bash
+conda env create --file=scpair.yml
+```
+
 PyPI installation will be released soon.
 
 ---
 ### Package requirements
-scPair is implemented using `PyTorch 2.0.1`, `anndata 0.10.6`, and `scanpy 1.10.0`  under `Python 3.10.14`. 
+scPair is implemented using `PyTorch 2.0.1`, `anndata 0.10.6`, and `scanpy 1.10.0` under `Python 3.10.x`. 
 
-Users can choose to create the environment provided under this repository [(env file)](https://github.com/quon-titative-biology/scPair/blob/main/scpair.yml):
-```command line
-conda env create --file=scpair.yml
-```
-we have tested it on Azure
+We have tested it on Azure.
 
 ---
 ### [Tutorials](https://github.com/quon-titative-biology/scPair/blob/main/tutorials/README.md)
